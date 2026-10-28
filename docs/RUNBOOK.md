@@ -18,7 +18,8 @@ pytest -q
 [P0_REPRODUCIBILITY.md](P0_REPRODUCIBILITY.md).
 
 `scripts/fetch_vtm.sh` lấy nhánh `vcm-hooks`; nếu kho đó không truy cập được, nó tải VTM-24.0 chính thức và áp
-`third_party/vtm_patch/vcm-hooks.patch`, rồi kiểm cây mã nguồn và ghi `third_party/VTM_COMMIT`, `VTM_PROVENANCE`.
+`third_party/vtm_patch/vcm-hooks.patch`, rồi kiểm tree bằng `third_party/vtm_patch/EXPECTED_TREE` (khác thì dừng) và ghi `third_party/VTM_COMMIT`, `VTM_PROVENANCE`
+(không commit; manifest mỗi job chép lại các giá trị này).
 
 Phần `detector` của `configs/experiment.yaml`, ví dụ với Detectron2 theo CTC:
 
@@ -68,11 +69,13 @@ python -m vcm.alf.experiments oracle --dump results/b1/dump/$J --decoded results
 #   so pseudo-variant: vcm.curves ... --test o1a_relaxed_oracle --allow-pseudo (báo cáo mang nhãn chẩn đoán)
 
 # O1-B (bằng chứng quyết định): bản đồ trọng số -> ALF encoder của chính VTM
+# bốn nhánh trọng số: continuous (chính), binary, shuffled, uniform (phải trùng byte alf_default)
 python -m vcm.alf.experiments weights --detections results/original/<seq>/detections.json --gt <annotations.json> \
   --width <W> --height <H> --pocs <coded_frames> --anchor-job results/b0/<seq>__<st>__qp<Q>__alf_default \
   --out results/b1/weights/<seq>__<st>
-python -m vcm.jobs ... --only-variants alf_default alf_weighted alf_external --out results/b1
-#   so với alf_default bằng vcm.curves
+python -m vcm.jobs ... --only-variants alf_weighted alf_weighted_binary alf_weighted_shuffled \
+  alf_weighted_uniform --out results/b1          # alf_default được thêm tự động làm tham chiếu
+#   cổng B-1: vcm.curves --anchor alf_default --test alf_weighted, và --anchor alf_weighted_shuffled --test alf_weighted
 ```
 
 ## 3. Nhánh A
@@ -91,10 +94,11 @@ python -m vcm.evaluate --results results/ramu/<seq>/runs --pseudo results/origin
 python -m vcm.ramu.runner collect --runs results/ramu/<seq>/runs --candidates results/ramu/<seq>/cand \
   --sequence <seq> --structure ldp --qp <Q> --out results/ramu/<seq>/cand
 #   -> interventions.csv (status: not_realised | realised_no_effect | effective | unexplained), realisation.json
-#   "unexplained" > 0: dừng và điều tra trước khi phân tích
+#   "unexplained" > 0: điều tra (so trace, log). Không xoá chúng khỏi interventions.csv
 
 # cổng A1 trên mọi chuỗi report (configs/ramu_inputs.example.yaml)
-# quyết định: gate_a1.json (can thiệp realised); độ nhạy: gate_a1_sensitivity.json; độ phủ: coverage.json
+# quyết định: gate_a1.json (mọi can thiệp requested); phụ + độ nhạy: gate_a1_secondary.json;
+# chẩn đoán: realisation_diagnostics.csv; độ phủ: coverage.json
 python -m vcm.ramu.analysis --inputs configs/ramu_inputs.yaml --out results/ramu/a1
 ```
 

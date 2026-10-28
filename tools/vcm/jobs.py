@@ -308,7 +308,9 @@ def run_job(job: Job, enc: Path, dec: Path, vtm_root: Path, out_root: Path, prov
     out = out_root / job.job_id
     manifest_path = out / "manifest.json"
     check_hook_inputs(job)
-    fp = fingerprint(job, enc, dec, vtm_root, (provenance or {}).get("vtm_commit", ""))
+    prov = provenance or {}
+    # the source tree identifies the encoder independently of how it was obtained (branch clone or patch)
+    fp = fingerprint(job, enc, dec, vtm_root, prov.get("vtm_tree") or prov.get("vtm_commit", ""))
     if manifest_path.exists():
         old = json.loads(manifest_path.read_text())
         if old.get("status") == "ok" and old.get("fingerprint", {}).get("hash") == fp["hash"]:
@@ -370,15 +372,35 @@ def run_job(job: Job, enc: Path, dec: Path, vtm_root: Path, out_root: Path, prov
     return manifest
 
 
+def with_references(jobs: list[Job], specs: dict[str, VariantSpec]) -> list[Job]:
+    """Add the reference job of every output-only variant (``same_bitstream_as``) that is not already planned, so
+    the bitstream-identity check can never be skipped by running the output-only variant on its own."""
+    have = {j.job_id for j in jobs}
+    out = list(jobs)
+    for j in jobs:
+        ref = specs.get(j.variant, VariantSpec()).same_bitstream_as
+        if not ref:
+            continue
+        r = Job(j.sequence, j.structure, j.qp, ref, resolve_args(specs[ref].args, j.sequence, j.structure, j.qp, ref))
+        if r.job_id not in have:
+            have.add(r.job_id)
+            out.append(r)
+    return out
+
+
 def check_same_bitstreams(jobs: list[Job], specs: dict[str, VariantSpec], done: dict[str, dict]) -> list[str]:
-    """Variants that only add output hooks (trace, dump) must not change the bitstream."""
+    """Variants that only add output hooks (trace, dump) must not change the bitstream. A missing or failed
+    reference job is itself a failure (the check could not be made)."""
     bad = []
     for j in jobs:
         ref = specs.get(j.variant, VariantSpec()).same_bitstream_as
         if not ref or j.job_id not in done:
             continue
         ref_id = Job(j.sequence, j.structure, j.qp, ref).job_id
-        if ref_id in done and done[ref_id]["bitstream_sha256"] != done[j.job_id]["bitstream_sha256"]:
+        if ref_id not in done:
+            bad.append(j.job_id)
+            print(f"FAIL {j.job_id}: reference {ref_id} unavailable, bitstream identity not verified")
+        elif done[ref_id]["bitstream_sha256"] != done[j.job_id]["bitstream_sha256"]:
             bad.append(j.job_id)
             print(f"FAIL {j.job_id}: bitstream differs from {ref_id} (output-only hook changed the encoding)")
     return bad
@@ -399,17 +421,18 @@ def main(argv=None) -> int:
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
 
-    variants = load_variant_specs(a.variants)
+    all_specs = variants = load_variant_specs(a.variants)
     if a.only_variants:
         unknown = set(a.only_variants) - set(variants)
         if unknown:
             raise SystemExit(f"unknown variants: {sorted(unknown)}")
         variants = {k: v for k, v in variants.items() if k in a.only_variants}
+    jobs = with_references(plan(load_sequences(a.sequences), a.structure, a.qps, variants, a.split), all_specs)
+    variants = {k: all_specs[k] for k in sorted({j.variant for j in jobs})}
     try:
         check_branch_separation(variants)
     except ValueError as exc:
         raise SystemExit(str(exc))
-    jobs = plan(load_sequences(a.sequences), a.structure, a.qps, variants, a.split)
     vtm, out = Path(a.vtm), Path(a.out)
     if a.dry_run:
         for j in jobs:

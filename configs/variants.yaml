@@ -19,11 +19,22 @@ variants:
   alf_default_dump:
     args: ["--VCMAlfDumpDir=results/b1/dump/{sequence}__{structure}__qp{qp}"]
     same_bitstream_as: alf_default
-  # --- Branch B, O1-B: task-weighted statistics inside VTM's own ALF encoder ---
-  #     weight maps: python -m vcm.alf.experiments weights ... --out results/b1/weights/{sequence}__{structure}
-  alf_weighted:
+  # --- Branch B, O1-B: ROI-weighted pixel SSE inside VTM's own ALF encoder (task-GUIDED, not a task loss) ---
+  #     weight maps (all four arms at once):
+  #       python -m vcm.alf.experiments weights ... --anchor-job <job> --out results/b1/weights/{sequence}__{structure}
+  alf_weighted:                  # main arm: detector-score coverage of the boxes
     branch: B
-    args: ["--VCMAlfWeightDir=results/b1/weights/{sequence}__{structure}"]
+    args: ["--VCMAlfWeightDir=results/b1/weights/{sequence}__{structure}/continuous"]
+  alf_weighted_binary:           # control: 1 inside any box, bg elsewhere (is the score useful?)
+    branch: B
+    args: ["--VCMAlfWeightDir=results/b1/weights/{sequence}__{structure}/binary"]
+  alf_weighted_shuffled:         # control: same boxes at random positions (is alignment with objects useful?)
+    branch: B
+    args: ["--VCMAlfWeightDir=results/b1/weights/{sequence}__{structure}/shuffled"]
+  alf_weighted_uniform:          # sanity: all-ones weights must reproduce the default ALF exactly
+    branch: B
+    args: ["--VCMAlfWeightDir=results/b1/weights/{sequence}__{structure}/uniform"]
+    same_bitstream_as: alf_default
   # --- Branch B, O1-A': externally designed coefficients, forced in every CTB of the listed pictures ---
   #     coefficient file: python -m vcm.alf.experiments oracle|wiener ... --out results/b1/external/<job>.txt
   alf_external:

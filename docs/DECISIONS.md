@@ -2,6 +2,33 @@
 
 Mỗi mục: ngày, quyết định, lý do, bằng chứng. Mục mới thêm lên đầu.
 
+## 2026-10-28 (khuya) — Rà soát độc lập lần 3: đổi quần thể chính của A1, đối chứng cho O1-B, khoá bản vá VTM
+
+Nguồn: rà soát của ChatGPT trên commit `9e2994d`. Mọi thay đổi dưới đây làm **trước** khi có dữ liệu CTC.
+
+1. *Quần thể chính của A1 = mọi can thiệp requested* (trước đó: realised). Lý do: bộ phân bổ không biết trước CTU
+   nào sẽ realised; chọn theo realised là chọn mẫu theo kết quả sau can thiệp. Realised thành phân tích phụ; báo cáo
+   in hiệu số B4 − B3 ở cả hai. Can thiệp `unexplained` không bị loại; chúng vô hiệu hoá phân tích realised tới khi
+   được giải thích. Thêm chẩn đoán tỉ lệ realised/effective theo QP, lớp thời gian, phần dư, độ quan trọng, fan-out.
+   Lập luận trước đây của tôi (giữ not_realised sẽ thưởng cho dự đoán khả năng xảy ra) vẫn đúng như một rủi ro diễn
+   giải — vì vậy hiệu số ở quần thể realised được in cạnh quyết định — nhưng không đủ để chọn nó làm quần thể chính.
+2. *O1-B là SSE điểm ảnh có trọng số ROI, không phải tối ưu trực tiếp méo nhiệm vụ.* Đóng góp tương ứng gọi là
+   Task-Guided ALF Parameter Optimization. Thêm ba nhánh đối chứng: ROI nhị phân, ROI xáo trộn (cùng hộp, cùng ngân
+   sách trọng số, vị trí ngẫu nhiên không chồng lên hộp thật), và đồng nhất (trọng số 1 — kiểm tra hợp lệ). Cổng B-1
+   nay đòi `alf_weighted` thắng cả `alf_default` lẫn `alf_weighted_shuffled`. Trên clip thử (LDP, QP 32): nhánh
+   đồng nhất trùng byte `alf_default`; tỉ trọng trọng số trong ROI 0,66 (liên tục), 0,68 (nhị phân), 0,07 (xáo trộn).
+3. *`fetch_vtm.sh` đường bản vá bị lỗi.* `git commit -a` không đưa tệp mới `VCM_HOOKS.md` vào commit, và sai khác chỉ
+   cảnh báo. Đã sửa: `git apply --index`; tree phải bằng `third_party/vtm_patch/EXPECTED_TREE` ở **mọi** đường (clone
+   nhánh, áp bản vá, bản có sẵn), sai thì dừng (exit 1). Đã thử: đường bản vá và đường nhánh cho cùng tree
+   `0a28da51…`; sửa một ký tự trong bản vá → script dừng. Fingerprint cache dùng tree thay cho commit, nên hai đường
+   cho cùng cache.
+4. *Hook trọng số ALF chấp nhận `+Inf`.* Đã sửa (`std::isfinite`), thêm kiểm tra tệp lớn hơn kích thước ảnh (VTM
+   `f1b3119`). Trọng số hợp lệ cho bitstream không đổi; tắt hook vẫn trùng byte VTM gốc.
+5. *Kiểm tra trùng bitstream của biến thể chỉ ghi có thể bị bỏ qua* khi chạy riêng biến thể đó. Đã sửa: `vcm.jobs`
+   tự thêm job tham chiếu; thiếu tham chiếu là lỗi.
+6. *Chênh lệch AI–LDP không phải phép tách hiệu ứng trong vòng lặp* (hai cấu hình khác nhau ở nhiều yếu tố). Đổi
+   vai trò các hàng "Phụ" thành mô tả; bằng chứng về lan truyền của nhánh A là B4 > B3/B5 trong cùng LDP.
+
 ## 2026-10-28 (tối) — Sửa độ tin cậy của pipeline theo rà soát độc lập; đính chính hai phát biểu
 
 Nguồn: rà soát của ChatGPT trên commit `6bd8dd9` (sáu vấn đề, lưu ý requested/realised/effective, chi phí ngoại
@@ -12,7 +39,7 @@ tuyến). Vẫn chưa có kết quả trên dữ liệu CTC; các con số dư�
    `cu_qp_delta` không có nghĩa can thiệp vô hiệu: hook ép cả QP lẫn λ, và λ đổi có thể đổi quyết định RD. Đo lại
    (LDP, QP 37, 12 can thiệp ΔQP = −2 trên clip 416×240): 3/8 CTU không có phần dư ở anchor vẫn làm bitstream thay
    đổi, 2 trong 3 chỉ qua quyết định (QP cuối không đổi). → Bỏ bộ lọc phần dư khi lấy mẫu; phân loại từng can thiệp
-   requested/realised/effective bằng trace riêng của mỗi lần chạy; phân tích chính trên can thiệp realised, độ nhạy
+   requested/realised/effective bằng trace riêng của mỗi lần chạy; phân tích chính trên can thiệp realised [đã đổi ở mục khuya: chính = mọi requested], độ nhạy
    trên mọi can thiệp requested (RAMU_LITE_SPEC.md). Nhận định "24/48 CTU hợp lệ" trước đây đo khả năng *có phần dư*,
    không phải khả năng *can thiệp được*.
 2. *O1-A không phải upper bound.* Nó nới lỏng codec (số thực, không APS, không hiệu ứng tham chiếu) nhưng cũng hạn

@@ -34,3 +34,11 @@ results/b1/weights/
 results/b1/external/
 results/ramu/trace/
 results/e2e/
+# per-checkout provenance written by scripts/fetch_vtm.sh (the pin is third_party/vtm_patch/EXPECTED_TREE)
+third_party/VTM_COMMIT
+third_party/VTM_PROVENANCE
+# bulky per-run outputs (share results with `python -m vcm.export`)
+results/**/traces/
+results/**/offsets/
+results/**/*.log
+results/**/detections.json
