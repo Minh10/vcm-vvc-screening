@@ -29,22 +29,60 @@ poc,ctu_addr,delta_qp
 
 ## Trace và log
 
-Hook `--VCMTraceFile` ghi mỗi CU luma cuối cùng một dòng:
-`poc,coding_order,temporal_id,x,y,w,h,qp,mode,ref_poc0,mv0x,mv0y,ref_poc1,mv1x,mv1y,resid_energy`
-(MV theo mẫu luma; `mode` ∈ intra/inter/skip; `resid_energy` = tổng |hệ số| luma). QP hiệu dụng trong trace dùng
-để kiểm tra can thiệp có thật sự áp dụng. Manifest mỗi lần chạy (`vcm.jobs`) ghi lệnh, commit VTM, bit, hash
-bitstream và MD5 ảnh giải mã. λ hiệu dụng và RD cost chưa được ghi (không cần cho cổng A1).
+Hook `--VCMTraceFile` (chỉ ghi, không đổi bitstream — đã kiểm ở AI, LDP, RA) ghi mỗi CU luma cuối cùng một dòng:
+`poc,coding_order,temporal_id,x,y,w,h,qp,mode,ref_poc0,mv0x,mv0y,ref_poc1,mv1x,mv1y,resid_energy,flags,mv_spread,ref_mixed`
 
-## Tính hợp lệ của can thiệp
+- `qp`: QP cuối cùng của CU đúng như bộ giải mã suy ra; `mode` ∈ intra/inter/skip; `resid_energy` = tổng |hệ số| luma.
+- MV (mẫu luma) đọc từ trường chuyển động đã lưu tại **tâm CU**: chính xác với CU tịnh tiến, là xấp xỉ tịnh tiến với
+  affine/GEO/sub-block.
+- `flags`: `affine4`, `affine6`, `geo`, `ciip`, `mmvd`, `ibc`, `plt`; `mv_spread`: độ lệch lớn nhất (L∞) giữa MV của
+  các khối 4×4 trong CU và MV tâm; `ref_mixed`: số khối 4×4 có tham chiếu/danh sách khác tâm (GEO hai tham chiếu).
 
-`cu_qp_delta` chỉ được gửi khi CU có phần dư. CTU không có phần dư trong lượt anchor bị loại khỏi tập ứng viên
-(`runner sample`). Báo cáo tỉ lệ CTU hợp lệ theo chuỗi và QP.
+Manifest mỗi lần chạy (`vcm.jobs`) ghi lệnh, commit/tree VTM, hash bản vá, fingerprint đầu vào, bit, hash bitstream,
+MD5 ảnh giải mã, số khung mã hoá. λ hiệu dụng và RD cost chưa được ghi (không cần cho cổng A1).
+
+## Độ phủ của mô hình đồ thị
+
+Đồ thị chồng lấn chỉ chính xác (bỏ qua tap nội suy) với CU tịnh tiến. CU **xấp xỉ** = GEO, `mv_spread` > 0,25 mẫu
+(affine có chuyển động không đều, SbTMVP) hoặc `ref_mixed` > 0. `graph.coverage` báo tỉ lệ diện tích inter theo loại;
+`analysis` ghi `coverage.json` và chạy phân tích độ nhạy loại CU xấp xỉ (bỏ cạnh của chúng và bỏ CTU có
+`approx_frac` > `max_approx_frac`). Trên clip tổng hợp 9 khung (QP 32): 5,9 % diện tích inter là xấp xỉ ở LDP,
+7,3 % ở RA (có GEO); affine chiếm ~30 % diện tích inter nhưng phần lớn có MV đồng nhất.
+
+## Requested / realised / effective
+
+Một can thiệp ΔQP được **yêu cầu** (requested) không có nghĩa là nó **xảy ra**. Phân biệt ba mức, đo trên trace riêng
+của từng lần chạy so với trace anchor:
+
+| Mức | Định nghĩa | Đo bằng |
+| --- | --- | --- |
+| requested | Tệp offset yêu cầu ΔQP ở CTU đích | mọi dòng `candidates.csv` |
+| realised | Trong CTU đích, QP cuối của ít nhất một CU **hoặc** quyết định mã hoá (phân hoạch, mode, công cụ, tham chiếu, MV) khác anchor | `qp_realised`, `decision_changed_target` |
+| effective | Bitstream khác anchor; ΔR, ΔL đo tác động | `bitstream_changed`, `delta_bits`, `delta_loss` |
+
+`status` ∈ `not_realised`, `realised_no_effect`, `effective`, `unexplained` (bitstream đổi nhưng trace CTU đích không
+đổi — lỗ hổng của trace, phải điều tra trước khi phân tích). `ctus_changed` đếm số CTU có quyết định thay đổi ở mọi
+ảnh (phạm vi lan toả).
+
+**Không lọc theo phần dư.** Hook ép QP *và* λ của CTU đích; λ đổi có thể đổi quyết định RD (ví dụ biến CU skip thành
+CU có phần dư) dù anchor không có phần dư. `runner sample` lấy mẫu trên mọi CTU, ghi `resid_in_anchor`;
+`--require-residual` chỉ là tuỳ chọn độ nhạy. Kiểm chứng trên clip tổng hợp (LDP, QP 37, 12 can thiệp ΔQP = −2):
+4/4 CTU có phần dư và **3/8 CTU không có phần dư** là effective (2 trong 3 chỉ qua thay đổi quyết định, QP cuối không
+đổi); 5 can thiệp not_realised đều cho bitstream trùng byte với anchor; 0 unexplained.
+
+**Quần thể phân tích** (cố định trước khi có kết quả):
+- chính: can thiệp realised. Can thiệp not_realised cho bitstream trùng anchor (ΔL = ΔR = 0), không mang thông tin về
+  lan truyền; giữ chúng sẽ thưởng cho bộ dự đoán *khả năng xảy ra* thay vì *lan truyền*;
+- độ nhạy 1: mọi can thiệp requested;
+- độ nhạy 2: realised, chỉ CTU tịnh tiến (xem mục độ phủ).
+Quyết định cổng A1 chỉ dựa trên quần thể chính; hai độ nhạy được báo cạnh nó (`gate_a1_sensitivity.json`).
+Báo cáo tỉ lệ realised/effective theo chuỗi và QP (`realisation.json`), vì nó giới hạn không gian hành động của A2.
 
 ## Thiết kế thí nghiệm
 
 - Cấu hình: LDP trước, rate control tắt, một QP giữa trước rồi ≥ 4 điểm QP.
 - Hành động đầu tiên: chỉ ΔQP = −2.
-- Pilot: 6 chuỗi, 48–64 khung, ~200 can thiệp hợp lệ mỗi chuỗi (chỉ kiểm tra pipeline).
+- Pilot: 6 chuỗi, 48–64 khung, ~200 can thiệp mỗi chuỗi (chỉ kiểm tra pipeline; đo tỉ lệ realised).
 - Xác nhận: ≥ 12 chuỗi độc lập (tốt hơn 16–20), 150–250 can thiệp mỗi chuỗi.
 - Lấy mẫu phân tầng theo: chồng lấn ROI, fan-out tham chiếu, chuyển động, năng lượng phần dư, mode, vị trí thời gian.
 - ~100 cặp can thiệp (50 cùng nhánh tham chiếu, 50 khác nhánh) để đo tương tác I^L, I^R.
@@ -62,6 +100,11 @@ bitstream và MD5 ảnh giải mã. λ hiệu dụng và RD cost chưa được 
 | B6 | Chỉ điểm lan truyền không phụ thuộc nhiệm vụ (`infl`) |
 
 Ở cổng A2 (mã hoá thật), đối chứng không phụ thuộc nhiệm vụ là **VTM `--DPF=1` và `--BIM=1`**, có sẵn trong VTM-24.0.
+Hai công cụ này cần đủ khung để có tác dụng: trên clip 6 khung cả hai cho bitstream **trùng byte** với
+`dqp_anchor`; trên một clip tổng hợp khác dài 33 khung chúng đổi bitrate (+17 % và −32 % ở QP 27). `vcm.curves` liệt kê chuỗi mà biến thể thử
+trùng byte anchor ở mọi QP. `--BIM` không chạy với `TemporalSubsampleRatio` ≠ 1 (cấu hình AI).
+
+**Bộ phân bổ QP cho A2 chưa được cài đặt** và chỉ được cài sau khi A1 = GO.
 
 B3, B4, B5 dùng cùng họ mô hình, cùng số tham số, cùng ngân sách tinh chỉnh (ridge, gradient-boosted trees hoặc MLP nhỏ).
 

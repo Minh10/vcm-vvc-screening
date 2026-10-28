@@ -1,0 +1,664 @@
+diff --git a/VCM_HOOKS.md b/VCM_HOOKS.md
+new file mode 100644
+index 0000000..f190d9a
+--- /dev/null
++++ b/VCM_HOOKS.md
+@@ -0,0 +1,17 @@
++# VCM screening hooks (branch `vcm-hooks`, based on tag VTM-24.0)
++
++Encoder-side instrumentation for the screening experiments in
++[Minh10/vcm-vvc-screening](https://github.com/Minh10/vcm-vvc-screening). The decoder, the syntax and every normative
++process are untouched. All options are empty by default; with every option empty the encoder output is
++byte-identical to VTM-24.0 (checked on AI and LDP, see `docs/ALF_CODEC_AUDIT.md` in the screening repo).
++
++| Option | Branch | Effect |
++| --- | --- | --- |
++| `--VCMQpOffsetFile=<csv>` | A (RAMU-Lite) | CSV `poc,ctu_addr,delta_qp`. Turns on DQP signalling and sets the QP of every quantization group of the listed CTUs to base QP + delta (lambda follows via `EncCu::updateLambda`). An empty file (header only) gives the DQP-enabled anchor. A delta only takes effect where the CU codes a residual (`cu_qp_delta` is not sent otherwise). |
++| `--VCMTraceFile=<csv>` | A | Output only. One row per final luma CU: `poc,coding_order,temporal_id,x,y,w,h,qp,mode,ref_poc0,mv0x,mv0y,ref_poc1,mv1x,mv1y,resid_energy,flags,mv_spread,ref_mixed`. `qp` is the CU's final QP as the decoder derives it; MVs (luma samples) are read from the stored motion field at the CU centre; `flags` = `affine4/affine6/geo/ciip/mmvd/ibc/plt` joined by `|`; `mv_spread` = max L-inf distance (luma samples) of the CU's 4x4 motion-field MVs from the centre MV; `ref_mixed` = number of 4x4 units whose list usage or reference differs from the centre (GEO). |
++| `--VCMAlfWeightDir=<dir>` | B (O1-B) | Reads `w_<poc>.f32` (float32, luma width x height) and uses it as the per-sample weight of the luma ALF statistics (replacing the HDR luma-level WSSD weight). Unit weights reproduce the default bitstream exactly. A missing map is an error. |
++| `--VCMAlfExternalFile=<txt>` | B (O1-A') | `vcm-alf-luma-txt-v1` file: per listed POC, 25 classes x (12 coefficients, 12 clipping indices). The picture gets a new APS with exactly these luma filters (25 filters, no merging) used in every CTB; luma ALF cannot be switched off for it. Unlisted pictures keep the VTM decisions and may reuse an earlier external APS. |
++| `--VCMAlfDumpDir=<dir>` | B | Writes `pre_/post_/org_<poc>.y16` (luma before/after ALF and original, int16, internal bit depth), `ctb_<poc>.txt` (AlfMode and the 25 x (12 coeff, 12 clip values) used per CTB) and `meta.txt`. |
++
++Files changed: `EncAppCfg.{h,cpp}`, `EncApp.cpp`, `EncCfg.h`, `EncLib.cpp` (DQP on), `EncModeCtrl.cpp` (QP),
++`EncCu.cpp` (lambda update condition), `EncSlice.{h,cpp}` (trace), `EncAdaptiveLoopFilter.{h,cpp}` (ALF hooks).
+diff --git a/source/App/EncoderApp/EncApp.cpp b/source/App/EncoderApp/EncApp.cpp
+index deeb5ab..0110e0b 100644
+--- a/source/App/EncoderApp/EncApp.cpp
++++ b/source/App/EncoderApp/EncApp.cpp
+@@ -1685,6 +1685,12 @@ void EncApp::xInitLibCfg( int layerIdx )
+   m_cEncLib.setDPFKeyLen(m_dpfKeyLen);
+   m_cEncLib.setDPFNonkeyLen(m_dpfNonkeyLen);
+ 
++  m_cEncLib.setVcmQpOffsets(m_vcmQpOffsets, !m_vcmQpOffsetFile.empty());
++  m_cEncLib.setVcmTraceFile(m_vcmTraceFile);
++  m_cEncLib.setVcmAlfWeightDir(m_vcmAlfWeightDir);
++  m_cEncLib.setVcmAlfExternalFile(m_vcmAlfExternalFile);
++  m_cEncLib.setVcmAlfDumpDir(m_vcmAlfDumpDir);
++
+   m_cEncLib.setGenerativeFaceVideoSEIEnabled                            ( m_generativeFaceVideoEnabled );
+   m_cEncLib.setGenerativeFaceVideoSEINumber                             ( m_generativeFaceVideoSEINumber );
+   m_cEncLib.setGenerativeFaceVideoSEIId                                 ( m_generativeFaceVideoSEIId );
+diff --git a/source/App/EncoderApp/EncAppCfg.cpp b/source/App/EncoderApp/EncAppCfg.cpp
+index 657d8f0..a618ce0 100644
+--- a/source/App/EncoderApp/EncAppCfg.cpp
++++ b/source/App/EncoderApp/EncAppCfg.cpp
+@@ -1373,6 +1373,11 @@ bool EncAppCfg::parseCfg( int argc, char* argv[] )
+   ("RDOQTS",                                          m_useRDOQTS,                                       true)
+   ("SelectiveRDOQ",                                   m_useSelectiveRDOQ,                               false, "Enable selective RDOQ")
+   ("DPF",                                             m_dpfEnabled,                                     false, "Distortion Propagation Factor, CTU-Level Lagrange Multiplier and QP Adaptation")
++  ("VCMQpOffsetFile",                                 m_vcmQpOffsetFile,                       std::string(""), "VCM screening: CSV 'poc,ctu_addr,delta_qp' of CTU QP interventions (enables DQP signalling; an empty file gives the DQP-enabled anchor)")
++  ("VCMTraceFile",                                    m_vcmTraceFile,                          std::string(""), "VCM screening: CSV trace of the final CU decisions (mode, QP, motion, references, residual energy)")
++  ("VCMAlfWeightDir",                                 m_vcmAlfWeightDir,                       std::string(""), "VCM screening: directory of per-POC luma weight maps w_<poc>.f32 used to weight the ALF statistics")
++  ("VCMAlfExternalFile",                              m_vcmAlfExternalFile,                    std::string(""), "VCM screening: external luma ALF coefficients per POC (vcm-alf-luma-txt-v1); forces a new APS with them in every CTB")
++  ("VCMAlfDumpDir",                                   m_vcmAlfDumpDir,                         std::string(""), "VCM screening: directory receiving pre/post-ALF luma, original luma and the luma filter of every CTB")
+   ("DPFKeyLength",                                    m_dpfKeyLen,                                   8, "DPF Propagation Length for key frames")
+   ("DPFNonkeyLength",                                 m_dpfNonkeyLen,                                0, "DPF Propagation Length for non-key frames")
+ 
+@@ -3579,6 +3584,30 @@ bool EncAppCfg::parseCfg( int argc, char* argv[] )
+     }
+   }
+ 
++  // VCM screening: CTU QP interventions "poc,ctu_addr,delta_qp" (header line and '#' comments allowed)
++  m_vcmQpOffsets.clear();
++  if (!m_vcmQpOffsetFile.empty())
++  {
++    std::ifstream ifs(m_vcmQpOffsetFile);
++    CHECK(!ifs.is_open(), "VCMQpOffsetFile cannot be opened: " + m_vcmQpOffsetFile);
++    std::string line;
++    int         lineNo = 0;
++    while (std::getline(ifs, line))
++    {
++      lineNo++;
++      if (line.empty() || line[0] == '#' || line.find_first_of("0123456789-") != 0)
++      {
++        continue;   // blank, comment or header line
++      }
++      int poc = 0, ctu = 0, dqp = 0;
++      CHECK(sscanf(line.c_str(), "%d,%d,%d", &poc, &ctu, &dqp) != 3,
++            "VCMQpOffsetFile: malformed line " + std::to_string(lineNo));
++      CHECK(m_vcmQpOffsets.count(std::make_pair(poc, ctu)) != 0,
++            "VCMQpOffsetFile: duplicate (poc, ctu_addr) at line " + std::to_string(lineNo));
++      m_vcmQpOffsets[std::make_pair(poc, ctu)] = dqp;
++    }
++  }
++
+   if( m_masteringDisplay.colourVolumeSEIEnabled )
+   {
+     for(uint32_t idx=0; idx<6; idx++)
+diff --git a/source/App/EncoderApp/EncAppCfg.h b/source/App/EncoderApp/EncAppCfg.h
+index 899cb65..6c51981 100644
+--- a/source/App/EncoderApp/EncAppCfg.h
++++ b/source/App/EncoderApp/EncAppCfg.h
+@@ -1138,6 +1138,14 @@ protected:
+   int                   m_dpfKeyLen;
+   int                   m_dpfNonkeyLen;
+ 
++  // VCM screening hooks (inactive when empty)
++  std::string           m_vcmQpOffsetFile;
++  std::map<std::pair<int, int>, int> m_vcmQpOffsets;
++  std::string           m_vcmTraceFile;
++  std::string           m_vcmAlfWeightDir;
++  std::string           m_vcmAlfExternalFile;
++  std::string           m_vcmAlfDumpDir;
++
+   int         m_maxLayers;
+   int         m_targetOlsIdx;
+   bool        m_OPIEnabled;                                     ///< enable Operating Point Information (OPI)
+diff --git a/source/Lib/EncoderLib/EncAdaptiveLoopFilter.cpp b/source/Lib/EncoderLib/EncAdaptiveLoopFilter.cpp
+index 8bbbcb4..1423fb3 100644
+--- a/source/Lib/EncoderLib/EncAdaptiveLoopFilter.cpp
++++ b/source/Lib/EncoderLib/EncAdaptiveLoopFilter.cpp
+@@ -42,6 +42,9 @@
+ #define AlfCtx(c) SubCtx( Ctx::Alf, c)
+ 
+ #include <algorithm>
++#include <cstdint>
++#include <fstream>
++#include <sstream>
+ 
+ #if MAX_NUM_CC_ALF_FILTERS>1
+ struct FilterIdxCount
+@@ -927,6 +930,8 @@ void EncAdaptiveLoopFilter::ALFProcess(CodingStructure& cs, const double *lambda
+   PelUnitBuf recYuv = m_tempBuf.getBuf( cs.area );
+   recYuv.extendBorderPel( MAX_ALF_FILTER_LENGTH >> 1 );
+ 
++  vcmLoadWeights(cs.slice->getPOC());   // VCM screening (no-op unless VCMAlfWeightDir is set)
++
+   // derive classification
+   const CPelBuf& recLuma = recYuv.get( COMPONENT_Y );
+   const PreCalcValues& pcv = *cs.pcv;
+@@ -1013,6 +1018,8 @@ void EncAdaptiveLoopFilter::ALFProcess(CodingStructure& cs, const double *lambda
+             lambdaChromaWeight
+ #endif
+   );
++  // VCM screening: replace the derived luma filters by external ones (no-op unless VCMAlfExternalFile is set)
++  m_vcmForceNewLuma = vcmApplyExternal(cs.slice->getPOC(), alfParam);
+ 
+   // derive filter (chroma)
+   if (!(m_encCfg->getMaxNumALFAPS() == 0) && isChromaEnabled(cs.pcv->chrFormat)) // Find ALF parameters for chroma if ALF APS is enabled
+@@ -1051,6 +1058,11 @@ void EncAdaptiveLoopFilter::ALFProcess(CodingStructure& cs, const double *lambda
+ 
+   alfReconstructor(cs, recYuv);
+ 
++  if (!m_encCfg->getVcmAlfDumpDir().empty())
++  {
++    vcmDump(cs, orgYuv, recYuv);   // VCM screening: luma before/after ALF and the filter of every CTB
++  }
++
+   // Do not transmit CC ALF if it is unchanged
+   if (cs.slice->getAlfEnabledFlag(COMPONENT_Y))
+   {
+@@ -2354,7 +2366,12 @@ void EncAdaptiveLoopFilter::getBlkStats(AlfCovariance *alfCovariance, const AlfF
+       const ComponentID compID  = isLuma(channel) ? COMPONENT_Y : COMPONENT_Cb;
+       const Pel        *lumaPtr = orgLuma + (i << ::getComponentScaleY(compID, m_chromaFormat)) * orgLumaStride
+                            + (j << ::getComponentScaleX(compID, m_chromaFormat));
+-      const double weight = m_alfWSSD ? m_lumaLevelToWeightPLUT[*lumaPtr] : 1.0;
++      double weight = m_alfWSSD ? m_lumaLevelToWeightPLUT[*lumaPtr] : 1.0;
++      if (!m_vcmWeight.empty() && isLuma(channel))
++      {
++        // VCM screening: task weight of this luma sample (replaces the luma-level WSSD weight)
++        weight = m_vcmWeight[(size_t) (areaDst.y + i) * m_picWidth + areaDst.x + j];
++      }
+       const double yLocal = org[j] - rec[j];
+ 
+       double e[MAX_ALF_NUM_CLIP_VALS][MAX_NUM_ALF_LUMA_COEFF];
+@@ -2675,6 +2692,10 @@ void  EncAdaptiveLoopFilter::alfEncoderCtb(CodingStructure& cs, AlfParam& alfPar
+     {
+       continue;
+     }
++    if (m_vcmForceNewLuma && !useNewFilter)
++    {
++      continue;   // VCM screening: external luma filters only
++    }
+ 
+     int bitsNewFilter = 0;
+     if (useNewFilter)
+@@ -2685,6 +2706,10 @@ void  EncAdaptiveLoopFilter::alfEncoderCtb(CodingStructure& cs, AlfParam& alfPar
+ 
+     for (int numTemporalAps = 0; numTemporalAps <= apsIds.size(); numTemporalAps++)
+     {
++      if (m_vcmForceNewLuma && numTemporalAps > 0)
++      {
++        continue;   // VCM screening: no previously coded APS
++      }
+       const int numApss = numTemporalAps + (useNewFilter ? 1 : 0);
+ 
+       if (m_encCfg->getMaxNumALFAPS() == 0 && numApss > 0)
+@@ -2707,7 +2732,7 @@ void  EncAdaptiveLoopFilter::alfEncoderCtb(CodingStructure& cs, AlfParam& alfPar
+         continue;
+       }
+ 
+-      const int numIter = useNewFilter ? 2 : 1;
++      const int numIter = (useNewFilter && !m_vcmForceNewLuma) ? 2 : 1;   // VCM screening: no re-derivation
+ 
+       for (int iter = 0; iter < numIter; iter++)
+       {
+@@ -2797,6 +2822,12 @@ void  EncAdaptiveLoopFilter::alfEncoderCtb(CodingStructure& cs, AlfParam& alfPar
+         m_CABACEstimator->getCtx() = ctxStart;
+         for (int ctbIdx = 0; ctbIdx < m_numCTUsInPic; ctbIdx++)
+         {
++          if (m_vcmForceNewLuma)
++          {
++            // VCM screening: every CTB uses the new (external) filter set, no RD decision
++            m_modes[COMPONENT_Y][ctbIdx] = AlfMode::LUMA_FIXED0 + ALF_NUM_FIXED_FILTER_SETS;
++            continue;
++          }
+           double distUnfilterCtb = m_ctbDistortionUnfilter[COMPONENT_Y][ctbIdx];
+           // ctb on
+           double         costOn = MAX_DOUBLE;
+@@ -2909,7 +2940,7 @@ void  EncAdaptiveLoopFilter::alfEncoderCtb(CodingStructure& cs, AlfParam& alfPar
+   cs.slice->setCcAlfCbApsId(newApsId);
+   cs.slice->setCcAlfCrApsId(newApsId);
+ 
+-  if (costOff <= costMin)
++  if (costOff <= costMin && !m_vcmForceNewLuma)   // VCM screening: luma ALF cannot be switched off
+   {
+     cs.slice->resetAlfEnabledFlag();
+     cs.slice->setNumAlfApsIdsLuma(0);
+@@ -4337,3 +4368,156 @@ void EncAdaptiveLoopFilter::countChromaSampleValueNearMidPoint(const Pel *chroma
+     chroma += (chromaStride << log2BlockHeight);
+   }
+ }
++
++// ---------------------------------------------------------------------------------------------------------------------
++// VCM screening hooks (github.com/Minh10/vcm-vvc-screening). Inactive unless the corresponding option is set.
++// ---------------------------------------------------------------------------------------------------------------------
++
++void EncAdaptiveLoopFilter::vcmLoadWeights(int poc)
++{
++  m_vcmWeight.clear();
++  const std::string &dir = m_encCfg->getVcmAlfWeightDir();
++  if (dir.empty())
++  {
++    return;
++  }
++  const std::string path = dir + "/w_" + std::to_string(poc) + ".f32";
++  std::ifstream     f(path, std::ios::binary);
++  // a missing map would silently fall back to unweighted statistics and contaminate the comparison
++  CHECK(!f.is_open(), "VCMAlfWeightDir: missing weight map " + path);
++  m_vcmWeight.resize((size_t) m_picWidth * m_picHeight);
++  f.read(reinterpret_cast<char *>(m_vcmWeight.data()), (std::streamsize) (m_vcmWeight.size() * sizeof(float)));
++  CHECK(f.gcount() != (std::streamsize) (m_vcmWeight.size() * sizeof(float)),
++        "VCMAlfWeightDir: weight map has the wrong size (expected luma width x height float32): " + path);
++  for (const float w: m_vcmWeight)
++  {
++    CHECK(!(w >= 0.0f), "VCMAlfWeightDir: weights must be finite and non-negative: " + path);
++  }
++}
++
++bool EncAdaptiveLoopFilter::vcmApplyExternal(int poc, AlfParam &alfParam)
++{
++  const std::string &file = m_encCfg->getVcmAlfExternalFile();
++  if (file.empty())
++  {
++    return false;
++  }
++  constexpr int numVals = 2 * (MAX_NUM_ALF_LUMA_COEFF - 1);   // 12 coefficients + 12 clipping indices per class
++  if (!m_vcmExternalLoaded)
++  {
++    std::ifstream f(file);
++    CHECK(!f.is_open(), "VCMAlfExternalFile cannot be opened: " + file);
++    std::string line;
++    CHECK(!std::getline(f, line) || line.rfind("# vcm-alf-luma-txt-v1", 0) != 0,
++          "VCMAlfExternalFile: missing '# vcm-alf-luma-txt-v1' header");
++    while (std::getline(f, line))
++    {
++      if (line.find_first_not_of(" \t\r") == std::string::npos)
++      {
++        continue;
++      }
++      std::istringstream head(line);
++      std::string        tag;
++      int                p = 0;
++      CHECK(!(head >> tag >> p) || tag != "POC", "VCMAlfExternalFile: expected 'POC <n>', got: " + line);
++      CHECK(m_vcmExternal.count(p) != 0, "VCMAlfExternalFile: duplicate POC " + std::to_string(p));
++      std::vector<int> v(MAX_NUM_ALF_CLASSES * numVals);
++      for (int c = 0; c < MAX_NUM_ALF_CLASSES; c++)
++      {
++        CHECK(!std::getline(f, line), "VCMAlfExternalFile: truncated block for POC " + std::to_string(p));
++        std::istringstream row(line);
++        for (int k = 0; k < numVals; k++)
++        {
++          CHECK(!(row >> v[c * numVals + k]), "VCMAlfExternalFile: expected 24 integers per class, POC "
++                                                  + std::to_string(p) + " class " + std::to_string(c));
++        }
++      }
++      m_vcmExternal[p] = v;
++    }
++    m_vcmExternalLoaded = true;
++  }
++  const auto it = m_vcmExternal.find(poc);
++  if (it == m_vcmExternal.end())
++  {
++    return false;   // pictures not listed keep the standard VTM decisions
++  }
++  const std::vector<int> &v = it->second;
++  bool nonLinear = false;
++  alfParam.enabledFlag[COMPONENT_Y] = true;
++  alfParam.numLumaFilters           = MAX_NUM_ALF_CLASSES;   // one filter per class, no merging
++  alfParam.alfLumaCoeffDeltaFlag    = false;
++  for (int c = 0; c < MAX_NUM_ALF_CLASSES; c++)
++  {
++    alfParam.filterCoeffDeltaIdx[c] = c;
++    alfParam.alfLumaCoeffFlag[c]    = true;
++    for (int k = 0; k < MAX_NUM_ALF_LUMA_COEFF - 1; k++)
++    {
++      const int coeff = v[c * numVals + k];
++      const int clip  = v[c * numVals + MAX_NUM_ALF_LUMA_COEFF - 1 + k];
++      CHECK(coeff < -128 || coeff > 127, "VCMAlfExternalFile: luma coefficient out of [-128, 127]");
++      CHECK(clip < 0 || clip >= ALF_NUM_CLIP_VALS[ChannelType::LUMA], "VCMAlfExternalFile: clipping index out of range");
++      alfParam.lumaCoeff[c * MAX_NUM_ALF_LUMA_COEFF + k] = coeff;
++      alfParam.lumaClipp[c * MAX_NUM_ALF_LUMA_COEFF + k] = clip;
++      nonLinear |= clip != 0;
++    }
++    alfParam.lumaCoeff[c * MAX_NUM_ALF_LUMA_COEFF + MAX_NUM_ALF_LUMA_COEFF - 1] = 0;
++    alfParam.lumaClipp[c * MAX_NUM_ALF_LUMA_COEFF + MAX_NUM_ALF_LUMA_COEFF - 1] = 0;
++  }
++  alfParam.nonLinearFlag[ChannelType::LUMA] = nonLinear;
++  return true;
++}
++
++void EncAdaptiveLoopFilter::vcmDump(CodingStructure &cs, const PelUnitBuf &orgYuv, const PelUnitBuf &preAlf)
++{
++  const std::string &dir = m_encCfg->getVcmAlfDumpDir();
++  const std::string  poc = std::to_string(cs.slice->getPOC());
++  {
++    std::ofstream meta(dir + "/meta.txt");
++    CHECK(!meta.is_open(), "VCMAlfDumpDir is not writable: " + dir);
++    meta << "width " << m_picWidth << "\nheight " << m_picHeight << "\nbitdepth "
++         << m_inputBitDepth[ChannelType::LUMA] << "\nctu_size " << m_maxCUHeight << "\nvb_pos " << m_alfVBLumaPos
++         << "\n";
++  }
++  auto writePlane = [&](const std::string &name, const CPelBuf &buf)
++  {
++    std::ofstream f(dir + "/" + name, std::ios::binary);
++    std::vector<int16_t> row(buf.width);
++    for (int y = 0; y < (int) buf.height; y++)
++    {
++      for (int x = 0; x < (int) buf.width; x++)
++      {
++        row[x] = (int16_t) buf.at(x, y);
++      }
++      f.write(reinterpret_cast<const char *>(row.data()), (std::streamsize) (row.size() * sizeof(int16_t)));
++    }
++  };
++  writePlane("pre_" + poc + ".y16", preAlf.get(COMPONENT_Y));
++  writePlane("post_" + poc + ".y16", cs.getRecoBuf().get(COMPONENT_Y));
++  writePlane("org_" + poc + ".y16", orgYuv.get(COMPONENT_Y));
++
++  std::ofstream t(dir + "/ctb_" + poc + ".txt");
++  const bool lumaOn = cs.slice->getAlfEnabledFlag(COMPONENT_Y);
++  t << "# vcm-alf-ctb-v1 poc " << poc << " luma_enabled " << (lumaOn ? 1 : 0) << "\n";
++  for (int ctb = 0; ctb < m_numCTUsInPic; ctb++)
++  {
++    const AlfMode m = lumaOn ? m_modes[COMPONENT_Y][ctb] : AlfMode::OFF;
++    t << "CTB " << ctb << " " << static_cast<int>(to_underlying(m)) << "\n";
++    if (m == AlfMode::OFF)
++    {
++      continue;
++    }
++    const AlfCoeff *coeff = getCoeffVals(m);
++    const Pel      *clip  = getClipVals(m);
++    for (int c = 0; c < MAX_NUM_ALF_CLASSES; c++)
++    {
++      for (int k = 0; k < MAX_NUM_ALF_LUMA_COEFF - 1; k++)
++      {
++        t << coeff[c * MAX_NUM_ALF_LUMA_COEFF + k] << ' ';
++      }
++      for (int k = 0; k < MAX_NUM_ALF_LUMA_COEFF - 1; k++)
++      {
++        t << clip[c * MAX_NUM_ALF_LUMA_COEFF + k] << (k + 1 < MAX_NUM_ALF_LUMA_COEFF - 1 ? ' ' : '\n');
++      }
++    }
++  }
++}
+diff --git a/source/Lib/EncoderLib/EncAdaptiveLoopFilter.h b/source/Lib/EncoderLib/EncAdaptiveLoopFilter.h
+index e1f7717..d4e413e 100644
+--- a/source/Lib/EncoderLib/EncAdaptiveLoopFilter.h
++++ b/source/Lib/EncoderLib/EncAdaptiveLoopFilter.h
+@@ -283,6 +283,15 @@ private:
+   bool                m_alfWSSD{ false };
+   std::vector<double> m_lumaLevelToWeightPLUT;
+ 
++  // VCM screening hooks (inactive unless the corresponding EncCfg option is set)
++  std::vector<float>  m_vcmWeight;                 ///< luma weight map of the current picture (empty: inactive)
++  bool                m_vcmForceNewLuma{ false };  ///< current picture uses external luma filters in every CTB
++  bool                m_vcmExternalLoaded{ false };
++  std::map<int, std::vector<int>> m_vcmExternal;   ///< POC -> 25 x (12 coefficients + 12 clipping indices)
++  void vcmLoadWeights(int poc);
++  bool vcmApplyExternal(int poc, AlfParam &alfParam);
++  void vcmDump(CodingStructure &cs, const PelUnitBuf &orgYuv, const PelUnitBuf &preAlf);
++
+   const EncCfg*          m_encCfg;
+   AlfCovariance***       m_alfCovariance[MAX_NUM_COMPONENT];          // [compIdx][shapeIdx][ctbAddr][classIdx]
+   EnumArray<AlfCovariance **, ChannelType> m_alfCovarianceFrame;   // [CHANNEL][shapeIdx][lumaClassIdx/chromaAltIdx]
+diff --git a/source/Lib/EncoderLib/EncCfg.h b/source/Lib/EncoderLib/EncCfg.h
+index f2f414c..503c9f7 100644
+--- a/source/Lib/EncoderLib/EncCfg.h
++++ b/source/Lib/EncoderLib/EncCfg.h
+@@ -559,6 +559,15 @@ protected:
+   int       m_dpfKeyLen;
+   int       m_dpfNonkeyLen;
+ 
++  // VCM screening hooks (github.com/Minh10/vcm-vvc-screening). Every hook is inactive when its option is empty,
++  // in which case the encoder output is byte-identical to the unmodified VTM.
++  std::map<std::pair<int, int>, int> m_vcmQpOffsets;                ///< (POC, CTU raster address) -> delta QP
++  bool        m_vcmQpOffsetActive = false;                          ///< VCMQpOffsetFile given (forces DQP signalling)
++  std::string m_vcmTraceFile;                                       ///< per-CU trace of the final coding decisions
++  std::string m_vcmAlfWeightDir;                                    ///< per-POC luma weight maps for ALF statistics
++  std::string m_vcmAlfExternalFile;                                 ///< per-POC external luma ALF coefficients
++  std::string m_vcmAlfDumpDir;                                      ///< dump of pre/post ALF luma and CTB filters
++
+   std::vector<uint16_t> m_sliceLosslessArray;                      ///< Slice lossless array
+   std::vector<uint32_t> m_tileColumnWidth;                    ///< tile column widths in units of CTUs (last column width will be repeated uniformly to cover any remaining picture width)
+   std::vector<uint32_t> m_tileRowHeight;                      ///< tile row heights in units of CTUs (last row height will be repeated uniformly to cover any remaining picture height)
+@@ -2079,6 +2088,26 @@ public:
+   int       getDPFKeyLen()                                      const { return m_dpfKeyLen; }
+   int       getDPFNonkeyLen()                                   const { return m_dpfNonkeyLen; }
+ 
++  void      setVcmQpOffsets(const std::map<std::pair<int, int>, int> &offsets, bool active)
++  {
++    m_vcmQpOffsets      = offsets;
++    m_vcmQpOffsetActive = active;
++  }
++  bool      getVcmQpOffsetActive()                              const { return m_vcmQpOffsetActive; }
++  int       getVcmQpOffset(int poc, int ctuRsAddr) const
++  {
++    const auto it = m_vcmQpOffsets.find(std::make_pair(poc, ctuRsAddr));
++    return it == m_vcmQpOffsets.end() ? 0 : it->second;
++  }
++  void      setVcmTraceFile(const std::string &s)                     { m_vcmTraceFile = s; }
++  const std::string &getVcmTraceFile()                          const { return m_vcmTraceFile; }
++  void      setVcmAlfWeightDir(const std::string &s)                  { m_vcmAlfWeightDir = s; }
++  const std::string &getVcmAlfWeightDir()                       const { return m_vcmAlfWeightDir; }
++  void      setVcmAlfExternalFile(const std::string &s)               { m_vcmAlfExternalFile = s; }
++  const std::string &getVcmAlfExternalFile()                    const { return m_vcmAlfExternalFile; }
++  void      setVcmAlfDumpDir(const std::string &s)                    { m_vcmAlfDumpDir = s; }
++  const std::string &getVcmAlfDumpDir()                         const { return m_vcmAlfDumpDir; }
++
+   bool      getUseReconBasedCrossCPredictionEstimate ()                const { return m_reconBasedCrossCPredictionEstimate;  }
+   void      setUseReconBasedCrossCPredictionEstimate (const bool value)      { m_reconBasedCrossCPredictionEstimate = value; }
+ 
+diff --git a/source/Lib/EncoderLib/EncCu.cpp b/source/Lib/EncoderLib/EncCu.cpp
+index ce2490d..76c7eb5 100644
+--- a/source/Lib/EncoderLib/EncCu.cpp
++++ b/source/Lib/EncoderLib/EncCu.cpp
+@@ -729,6 +729,7 @@ void EncCu::xCompressCU( CodingStructure*& tempCS, CodingStructure*& bestCS, Par
+ #if SHARP_LUMA_DELTA_QP || ENABLE_QPA_SUB_CTU
+     if (partitioner.currQgEnable() && (
+         (m_pcEncCfg->getBIM()) ||
++        (m_pcEncCfg->getVcmQpOffsetActive()) ||
+ #if SHARP_LUMA_DELTA_QP
+         (m_pcEncCfg->getLumaLevelToDeltaQPMapping().isEnabled()) ||
+ #endif
+diff --git a/source/Lib/EncoderLib/EncLib.cpp b/source/Lib/EncoderLib/EncLib.cpp
+index 453c697..3cbc7e4 100644
+--- a/source/Lib/EncoderLib/EncLib.cpp
++++ b/source/Lib/EncoderLib/EncLib.cpp
+@@ -1887,6 +1887,10 @@ void EncLib::xInitPPS(PPS &pps, const SPS &sps)
+   {
+     useDeltaQp = true;
+   }
++  if (m_vcmQpOffsetActive)
++  {
++    useDeltaQp = true;   // VCM screening: DQP signalling on for interventions and for their DQP-enabled anchor
++  }
+ 
+   if (m_costMode==COST_SEQUENCE_LEVEL_LOSSLESS || m_costMode==COST_LOSSLESS_CODING)
+   {
+diff --git a/source/Lib/EncoderLib/EncModeCtrl.cpp b/source/Lib/EncoderLib/EncModeCtrl.cpp
+index 55b6969..331ea06 100644
+--- a/source/Lib/EncoderLib/EncModeCtrl.cpp
++++ b/source/Lib/EncoderLib/EncModeCtrl.cpp
+@@ -156,6 +156,21 @@ void EncModeCtrl::xGetMinMaxQP(int& minQP, int& maxQP,
+   const bool qgEnableChildren = qgEnable && ((partitioner.currSubdiv + subdivIncr) <= cs.slice->getCuQpDeltaSubdiv()) && (subdivIncr > 0); // QG possible at next level
+   const bool isLeafQG = (qgEnable && !qgEnableChildren);
+ 
++  if (isLeafQG && m_pcEncCfg->getVcmQpOffsetActive())
++  {
++    // VCM screening: the QP of every QG in a CTU is the base QP plus the requested CTU offset (0 when absent).
++    // Lambda follows through EncCu::updateLambda (lambda ~ 2^(dQP/3)).
++    const Position pos     = partitioner.currQgPos;
++    const int      ctuSize = sps.getCTUSize();
++    const int      ctuAddr = (pos.y / ctuSize) * cs.pcv->widthInCtus + (pos.x / ctuSize);
++    const int      qp      = Clip3(-sps.getQpBDOffset(ChannelType::LUMA), MAX_QP,
++                                   baseQP + m_pcEncCfg->getVcmQpOffset(cs.slice->getPOC(), ctuAddr));
++    minQP = qp;
++    maxQP = qp;
++    deltaQPForLambda = 0.0;
++    return;
++  }
++
+   if( isLeafQG ) // QG at deepest level
+   {
+     int deltaQP = m_pcEncCfg->getMaxDeltaQP();
+diff --git a/source/Lib/EncoderLib/EncSlice.cpp b/source/Lib/EncoderLib/EncSlice.cpp
+index ae7e837..fe7f6f5 100644
+--- a/source/Lib/EncoderLib/EncSlice.cpp
++++ b/source/Lib/EncoderLib/EncSlice.cpp
+@@ -1937,6 +1937,10 @@ void EncSlice::encodeCtus( Picture* pcPic, const bool bCompressEntireSlice, cons
+     if (pCfg->getSwitchPOC() != pcPic->poc || ctuRsAddr >= pCfg->getDebugCTU())
+     {
+       m_pcCuEncoder->compressCtu(cs, ctuArea, ctuRsAddr, prevQP, currQP);
++      if (!m_pcCfg->getVcmTraceFile().empty() && m_pcLib->getEncType() == ENC_FULL)
++      {
++        vcmTraceCtu(cs, ctuArea, *pcSlice);
++      }
+ #if GREEN_METADATA_SEI_ENABLED
+       FeatureCounterStruct m_featureCounter = pcPic->getFeatureCounter();
+       countFeatures(m_featureCounter, cs,ctuArea);
+@@ -2193,6 +2197,128 @@ double EncSlice::xGetQPValueAccordingToLambda ( double lambda )
+   return 4.2005*log(lambda) + 13.7122;
+ }
+ 
++// VCM screening: one CSV row per final luma CU of the CTU (format documented in vcm-vvc-screening, vcm/ramu/graph.py)
++void EncSlice::vcmTraceCtu(const CodingStructure &cs, const UnitArea &ctuArea, const Slice &slice)
++{
++  if (!m_vcmTrace.is_open())
++  {
++    m_vcmTrace.open(m_pcCfg->getVcmTraceFile());
++    CHECK(!m_vcmTrace.is_open(), "VCMTraceFile cannot be opened: " + m_pcCfg->getVcmTraceFile());
++    m_vcmTrace << "poc,coding_order,temporal_id,x,y,w,h,qp,mode,ref_poc0,mv0x,mv0y,ref_poc1,mv1x,mv1y,resid_energy,"
++                  "flags,mv_spread,ref_mixed\n";
++  }
++  const int poc = slice.getPOC();
++  auto      ord = m_vcmCodingOrder.find(poc);
++  if (ord == m_vcmCodingOrder.end())
++  {
++    ord = m_vcmCodingOrder.emplace(poc, (int) m_vcmCodingOrder.size()).first;
++  }
++  const double mvScale = 1.0 / double(1 << MV_FRACTIONAL_BITS_INTERNAL);
++
++  for (const CodingUnit &cu: cs.traverseCUs(ctuArea, ChannelType::LUMA))
++  {
++    const bool  intraLike = CU::isIntra(cu) || CU::isIBC(cu) || CU::isPLT(cu);
++    const char *mode      = intraLike ? "intra" : (cu.skip ? "skip" : "inter");
++    int         refPoc[2] = { -1, -1 };
++    double      mv[2][2]  = { { 0.0, 0.0 }, { 0.0, 0.0 } };
++    double      mvSpread  = 0.0;   // max |subblock MV - centre MV| (luma samples, L-inf) over the CU's 4x4 grid
++    int         refMixed  = 0;     // 4x4 subblocks whose reference picture / list usage differs from the centre
++    std::string flags;
++    auto        addFlag = [&flags](const char *f) { flags += (flags.empty() ? "" : "|") + std::string(f); };
++    if (CU::isIBC(cu))
++    {
++      addFlag("ibc");
++    }
++    if (CU::isPLT(cu))
++    {
++      addFlag("plt");
++    }
++    if (!intraLike && cu.firstPU != nullptr)
++    {
++      const PredictionUnit &pu = *cu.firstPU;
++      if (cu.affine)
++      {
++        addFlag(cu.affineType == AffineModel::_6_PARAMS ? "affine6" : "affine4");
++      }
++      if (cu.geoFlag)
++      {
++        addFlag("geo");
++      }
++      if (pu.ciipFlag)
++      {
++        addFlag("ciip");
++      }
++      if (pu.mmvdMergeFlag)
++      {
++        addFlag("mmvd");
++      }
++      // Motion as stored in the picture's motion field (what later pictures and the decoder see per 4x4 unit):
++      // the centre sample gives the translational approximation for affine and GEO CUs as well.
++      const CompArea   &ya     = cu.Y();
++      const Position    centre(ya.x + ya.width / 2, ya.y + ya.height / 2);
++      const MotionInfo &mc     = cs.getMotionInfo(centre);
++      for (int l = 0; l < NUM_REF_PIC_LIST_01; l++)
++      {
++        if ((mc.interDir & (1 << l)) && mc.refIdx[l] >= 0)
++        {
++          refPoc[l] = slice.getRefPOC(RefPicList(l), mc.refIdx[l]);
++          mv[l][0]  = mc.mv[l].getHor() * mvScale;
++          mv[l][1]  = mc.mv[l].getVer() * mvScale;
++        }
++      }
++      for (int y = ya.y; y < ya.y + (int) ya.height; y += 4)
++      {
++        for (int x = ya.x; x < ya.x + (int) ya.width; x += 4)
++        {
++          const MotionInfo &m = cs.getMotionInfo(Position(x, y));
++          if (m.interDir != mc.interDir)
++          {
++            refMixed++;
++            continue;
++          }
++          bool differs = false;
++          for (int l = 0; l < NUM_REF_PIC_LIST_01; l++)
++          {
++            if (!(m.interDir & (1 << l)))
++            {
++              continue;
++            }
++            if (m.refIdx[l] != mc.refIdx[l])
++            {
++              differs = true;
++              continue;
++            }
++            mvSpread = std::max(mvSpread, std::abs(m.mv[l].getHor() - mc.mv[l].getHor()) * mvScale);
++            mvSpread = std::max(mvSpread, std::abs(m.mv[l].getVer() - mc.mv[l].getVer()) * mvScale);
++          }
++          refMixed += differs ? 1 : 0;
++        }
++      }
++    }
++    double resid = 0.0;
++    for (const TransformUnit &tu: CU::traverseTUs(cu))
++    {
++      if (!tu.blocks[COMPONENT_Y].valid() || !TU::getCbf(tu, COMPONENT_Y))
++      {
++        continue;
++      }
++      const CCoeffBuf c = tu.getCoeffs(COMPONENT_Y);
++      for (int y = 0; y < (int) c.height; y++)
++      {
++        for (int x = 0; x < (int) c.width; x++)
++        {
++          resid += std::abs(c.at(x, y));
++        }
++      }
++    }
++    const CompArea &a = cu.Y();
++    m_vcmTrace << poc << ',' << ord->second << ',' << slice.getTLayer() << ',' << a.x << ',' << a.y << ','
++               << a.width << ',' << a.height << ',' << static_cast<int>(cu.qp) << ',' << mode << ',' << refPoc[0] << ',' << mv[0][0]
++               << ',' << mv[0][1] << ',' << refPoc[1] << ',' << mv[1][0] << ',' << mv[1][1] << ',' << resid << ','
++               << flags << ',' << mvSpread << ',' << refMixed << '\n';
++  }
++}
++
+ void EncSlice::setCTULambdaQpByWeight(uint32_t ctuIdx, TrQuant* pTrQuant, RdCost* pRdCost, Slice* pcSlice)
+ {
+   const double lambdaCTU = m_lambda * m_lambdaWeight[ctuIdx];
+diff --git a/source/Lib/EncoderLib/EncSlice.h b/source/Lib/EncoderLib/EncSlice.h
+index daa5812..42bbbe5 100644
+--- a/source/Lib/EncoderLib/EncSlice.h
++++ b/source/Lib/EncoderLib/EncSlice.h
+@@ -46,6 +46,9 @@
+ #include "CommonLib/CommonDef.h"
+ #include "CommonLib/Picture.h"
+ 
++#include <fstream>
++#include <map>
++
+ //! \ingroup EncoderLib
+ //! \{
+ 
+@@ -147,6 +150,11 @@ public:
+ private:
+   double  xGetQPValueAccordingToLambda ( double lambda );
+ 
++private:
++  std::ofstream           m_vcmTrace;          ///< VCM screening: CU trace (VCMTraceFile)
++  std::map<int, int>      m_vcmCodingOrder;    ///< VCM screening: POC -> position in coding order
++  void                    vcmTraceCtu(const CodingStructure &cs, const UnitArea &ctuArea, const Slice &slice);
++
+ private:
+   std::vector<double>     m_lambdaWeight;
+   double                  m_lambda;

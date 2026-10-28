@@ -35,14 +35,17 @@ def run_on_yuv(detector: Detector, path, width: int, height: int, bitdepth: int 
     return out
 
 
-def to_coco_results(dets: Sequence[FrameDetections], image_ids: Sequence[int]) -> list[dict]:
-    """COCO results format; ``image_ids[frame]`` maps decoded frame index -> GT image id."""
+def to_coco_results(dets: Sequence[FrameDetections], image_ids) -> list[dict]:
+    """COCO results format. ``image_ids`` maps ``d.frame`` -> GT image id: a dict (source frame -> id, gaps
+    allowed) or a sequence indexed by frame. Frames without a GT image are not scored."""
+    lookup = image_ids if isinstance(image_ids, dict) else dict(enumerate(image_ids))
     res = []
     for d in dets:
-        if d.frame >= len(image_ids):
-            continue  # frames without annotations are not scored
+        img = lookup.get(d.frame)
+        if img is None:
+            continue
         for (x0, y0, x1, y1), s, c in zip(d.boxes, d.scores, d.labels):
-            res.append({"image_id": int(image_ids[d.frame]), "category_id": int(c),
+            res.append({"image_id": int(img), "category_id": int(c),
                         "bbox": [float(x0), float(y0), float(x1 - x0), float(y1 - y0)], "score": float(s)})
     return res
 

@@ -4,12 +4,12 @@
 ``wiener``  per-class (weighted) least-squares coefficient design with clipping-index search
 ``project`` projection of real-valued coefficients onto valid ALF syntax, export for the VTM hook
 ``weights`` per-pixel task weights (pseudo-label boxes, Hutchinson estimate of diag(J^T J))
-``oracle``  O1-A: gradient-based upper bound through a differentiable ALF (torch)
+``oracle``  O1-A: gradient-based relaxed oracle through a differentiable ALF (torch)
+``dump``    reader of the VTM ALF dump hook (pre/post-ALF luma, per-CTB filters)
 
-Scope and known approximations (to be closed by the ALF audit against the pinned VTM):
+Scope (docs/ALF_CODEC_AUDIT.md):
 - luma only; chroma ALF and CC-ALF are out of scope for the screening;
-- no ALF virtual boundary handling (VVC pads samples across a virtual boundary 4 luma rows above each CTU's
-  bottom edge and changes the classification there), so results differ from VTM on those rows;
-- picture-boundary handling = coordinate clamping (replicate padding);
-- constants marked VERIFY in ``spec`` must be checked against the VTM source before any bit-exact claim.
+- ``spec`` is bit-exact with VTM-24.0 luma ALF (classification, virtual boundary at CTU-4 rows, clipping,
+  rounding), verified against a literal port of the VTM C++ and against VTM's own dump (tests/test_alf.py);
+- picture boundaries: replicate padding as in VTM; single-slice, single-tile pictures only (as in the CTC).
 """

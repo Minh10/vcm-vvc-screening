@@ -122,3 +122,32 @@ def test_gate_separates_simulated_scenarios(scenario, expected):
     df = simulate_dataset(scenario, n_sequences=8, seed=7, frames=12, cols=6, rows=4, n_interventions=50)
     gate = gate_a1(score_models(df, "ridge", 0.1, 7), n_resamples=1000, seed=7)
     assert gate["decision"] == expected
+
+
+def test_coverage_and_exclusion_of_approximate_motion():
+    import pandas as pd
+    from vcm.ramu.graph import Picture, build_edges, coverage, load_trace, node_table
+    pic = Picture(128, 64, 64)
+    base = dict(coding_order=1, temporal_id=0, w=64, h=64, qp=32, ref_poc1=-1, mv1x=0.0, mv1y=0.0,
+                resid_energy=0.0, ref_mixed=0)
+    rows = [dict(base, poc=1, x=0, y=0, mode="skip", ref_poc0=0, mv0x=0.0, mv0y=0.0, flags="", mv_spread=0.0),
+            dict(base, poc=1, x=64, y=0, mode="inter", ref_poc0=0, mv0x=-64.0, mv0y=0.0, flags="affine4",
+                 mv_spread=3.0)]
+    t = pd.DataFrame(rows)
+    c = coverage(t)
+    assert c["known"] and c["approx_frac_of_inter"] == 0.5 and c["by_flag"] == {"affine4": 0.5}
+    assert len(build_edges(t, pic)) == 2
+    assert list(build_edges(t, pic, exclude_approx=True)) == [((0, 0), (1, 0))]
+    assert node_table(t, pic).set_index("ctu_addr")["approx_frac"].to_dict() == {0: 0.0, 1: 1.0}
+    # a translational CU with sub-block motion (e.g. SbTMVP) is approximate through mv_spread
+    t2 = t.assign(flags="", mv_spread=[0.0, 1.0])
+    assert coverage(t2)["approx_frac_of_inter"] == 0.5
+
+
+def test_old_traces_load_with_unknown_coverage(tmp_path):
+    import pandas as pd
+    from vcm.ramu.graph import TRACE_COLUMNS, coverage, load_trace
+    p = tmp_path / "t.csv"
+    pd.DataFrame([dict(zip(TRACE_COLUMNS, [0, 0, 0, 0, 0, 8, 8, 32, "intra", -1, 0, 0, -1, 0, 0, 1]))]).to_csv(p, index=False)
+    t = load_trace(p)
+    assert not coverage(t)["known"]

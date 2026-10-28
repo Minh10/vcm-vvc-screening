@@ -2,6 +2,54 @@
 
 Mỗi mục: ngày, quyết định, lý do, bằng chứng. Mục mới thêm lên đầu.
 
+## 2026-10-28 (tối) — Sửa độ tin cậy của pipeline theo rà soát độc lập; đính chính hai phát biểu
+
+Nguồn: rà soát của ChatGPT trên commit `6bd8dd9` (sáu vấn đề, lưu ý requested/realised/effective, chi phí ngoại
+tuyến). Vẫn chưa có kết quả trên dữ liệu CTC; các con số dưới đây từ clip tổng hợp, chỉ kiểm chứng công cụ.
+
+**Đính chính.**
+1. *Mục 4 của nhật ký chiều nay ("can thiệp QP chỉ có hiệu lực khi CU có phần dư") sai ở dạng đã viết.* Không gửi
+   `cu_qp_delta` không có nghĩa can thiệp vô hiệu: hook ép cả QP lẫn λ, và λ đổi có thể đổi quyết định RD. Đo lại
+   (LDP, QP 37, 12 can thiệp ΔQP = −2 trên clip 416×240): 3/8 CTU không có phần dư ở anchor vẫn làm bitstream thay
+   đổi, 2 trong 3 chỉ qua quyết định (QP cuối không đổi). → Bỏ bộ lọc phần dư khi lấy mẫu; phân loại từng can thiệp
+   requested/realised/effective bằng trace riêng của mỗi lần chạy; phân tích chính trên can thiệp realised, độ nhạy
+   trên mọi can thiệp requested (RAMU_LITE_SPEC.md). Nhận định "24/48 CTU hợp lệ" trước đây đo khả năng *có phần dư*,
+   không phải khả năng *can thiệp được*.
+2. *O1-A không phải upper bound.* Nó nới lỏng codec (số thực, không APS, không hiệu ứng tham chiếu) nhưng cũng hạn
+   chế (một bộ lọc mỗi ảnh cho mọi CTB, không bật/tắt CTB, không chọn APS) và tối ưu cục bộ, nên có thể thua ALF thật
+   của anchor. → Gọi là oracle nới lỏng/xấp xỉ; pseudo-variant đổi tên `o1a_relaxed_oracle`, có cờ `pseudo_variant`;
+   báo cáo `beats_anchor_actual` theo ảnh. Cổng B-0 không còn là điều kiện dừng nhánh B: nếu trượt chỉ hạ ưu tiên,
+   O1-B (bằng chứng quyết định, rẻ) vẫn chạy trên pilot. Thay đổi cổng này làm **trước** khi có bất kỳ dữ liệu nào.
+
+**Sửa lỗi pipeline.**
+3. *Căn khung AI.* `evaluate` ghép khung giải mã với GT theo thứ tự liên tiếp; với `TemporalSubsampleRatio = 8` của
+   cấu hình AI, khung giải mã 1 (nguồn 8) bị chấm với nhãn khung 1. → Ánh xạ khung giải mã k → khung nguồn
+   `FrameSkip + k·step` → ảnh GT theo `frame_index` của khung nguồn; chỉ chấm GT của khung đã mã hoá; kiểm số khung
+   giải mã. Test: ở AI step 8 cách ghép cũ cho mAP < 50 trên dữ liệu mà cách đúng cho 100.
+4. *Cache không có fingerprint.* → Fingerprint cho mã hoá (lệnh, cfg, binary, đầu vào, tệp hook, commit) và cho chỉ
+   số nhiệm vụ (detector + trọng số, MD5 ảnh giải mã, GT, step, nguồn nhãn giả); metric cũ bị xoá khi mã hoá lại;
+   `curves` bỏ metric không khớp ảnh giải mã và từ chối trộn detector.
+5. *Biến thể có tham số.* `alf_weighted`, `alf_external`, `alf_default_dump`, `dqp_anchor_trace` nay chạy được qua
+   `vcm.jobs` với `{sequence}`, `{structure}`, `{qp}`; tệp hook thiếu → lỗi trước khi mã hoá. Chạy thật với VTM:
+   10 biến thể nhánh B (AI + LDP) và 7 biến thể nhánh A; dump/trace trùng byte biến thể gốc.
+6. *Tách nhánh bằng mã.* `vcm.jobs` từ chối chạy chung biến thể nhánh A và B.
+7. *Đồ thị và mode không tịnh tiến.* Trace mới (VTM `9d0aceb`) lấy MV tại tâm CU từ trường chuyển động, ghi cờ
+   affine/GEO/CIIP/MMVD, `mv_spread`, `ref_mixed`; `graph.coverage` báo độ phủ, `analysis` chạy độ nhạy loại CU xấp
+   xỉ. Clip tổng hợp: 5,9 % (LDP) và 7,3 % (RA) diện tích inter là xấp xỉ. Bitstream có/không trace và hook tắt so
+   với VTM gốc trùng byte ở AI, LDP, RA.
+8. *Kiểm toán độc lập bản vá VTM.* Kho `Minh10/VVCSoftware_VTM` là riêng tư (nguyên nhân lỗi 404 của người rà soát).
+   → Xuất `third_party/vtm_patch/vcm-hooks.patch` (12 tệp, +439/−3) vào kho công khai; áp lên VTM-24.0 cho đúng tree
+   `8dd3dde…` của `vcm-hooks`; `fetch_vtm.sh` dùng bản vá khi không clone được kho riêng và tự kiểm. Đồng thời sửa
+   `VTM_COMMIT`: trước đây ghi commit gốc `ca331de` dù binary có hook; nay ghi commit có hook kèm tree và hash bản vá.
+
+**Phát hiện mới.**
+9. *`--DPF` và `--BIM` có thể không làm gì trên chuỗi ngắn.* Clip 6 khung: cả hai cho bitstream trùng byte với
+   `dqp_anchor`; clip 33 khung: +17 % và −32 % bitrate ở QP 27. → `curves` liệt kê chuỗi có bitstream thử trùng
+   anchor ở mọi QP; số khung của A2 phải đủ để đối chứng có hiệu lực. `--BIM` không chạy ở AI (step ≠ 1).
+10. *Bộ phân bổ QP của A2 chưa được cài.* Chỉ cài sau A1 = GO (không coi A2 là sẵn sàng).
+11. *Chi phí ngoại tuyến* là điều kiện báo cáo: số lần mã hoá/bitstream, thời gian detector và mã hoá, lookahead
+    (RESEARCH_PLAN.md, "Chi phí triển khai").
+
 ## 2026-10-28 (chiều) — Công cụ và hook VTM hoàn tất; các phát hiện thay đổi thiết kế
 
 Chưa có kết quả trên dữ liệu CTC: môi trường phát triển không truy cập được dữ liệu SFU/TVD, trọng số detector CTC
@@ -17,12 +65,12 @@ VTM; driver cho mọi bậc của hai nhánh; 74 test tự động.
    có ý nghĩa thống kê ngay cả khi chỉ số lượng tham chiếu quan trọng. → B3 nay chứa `infl`, `depth`; B4/B5 chỉ khác
    ở đặc trưng có trọng số độ quan trọng.
 3. *Độ nhạy của cổng A1* với 12 chuỗi: GO 11/15 lần khi có hiệu ứng, 0/15 khi null. → Bước xác nhận dùng 16–20 chuỗi.
-4. *Can thiệp QP chỉ có hiệu lực khi CU có phần dư* (chuẩn VVC không gửi `cu_qp_delta` khi không có phần dư). → Lấy
+4. **[Đã đính chính — xem mục 2026-10-28 (tối), 1]** *Can thiệp QP chỉ có hiệu lực khi CU có phần dư* (chuẩn VVC không gửi `cu_qp_delta` khi không có phần dư). → Lấy
    mẫu chỉ trên CTU hợp lệ; đo tỉ lệ CTU hợp lệ ở QP của CTC trong pilot.
 5. *VTM đã có Wiener có trọng số cho ALF (WSSD, HDR).* → O1-B thay nguồn trọng số; không tuyên bố cơ chế là mới.
 6. *APS 25 bộ lọc không gộp tốn ~2.600 bit/ảnh* (clip thử, AI QP 27). → O1-B trong bộ mã ALF của VTM (có gộp lớp)
    là bậc quyết định; O1-A′ chỉ để đo tổn thất do chuẩn hoá.
-7. *Oracle O1-A xuất phát từ bộ lọc của anchor và trả về bước tốt nhất*, nên không bao giờ tệ hơn điểm xuất phát
+7. **[Bổ sung — xem mục 2026-10-28 (tối), 2: không phải upper bound]** *Oracle O1-A xuất phát từ bộ lọc của anchor và trả về bước tốt nhất*, nên không bao giờ tệ hơn điểm xuất phát
    trên loss tối ưu. Phiên bản đầu (khởi tạo 0, bỏ clipping) làm loss tăng — đã sửa.
 
 ## 2026-10-28 — Tách hai nhánh sàng lọc, chưa đổi trục luận án

@@ -8,9 +8,11 @@ chọn trục chính của luận án. Mọi thí nghiệm giữ bitstream VVC h
 
 | Hạng mục | Trạng thái |
 | --- | --- |
-| Bộ mã VTM-24.0 + hook sàng lọc ([`Minh10/vvcsoftware_vtm`](https://github.com/Minh10/vvcsoftware_vtm), nhánh `vcm-hooks`) | Xong; tắt hook = trùng byte VTM gốc (AI, LDP) |
+| Bộ mã VTM-24.0 + hook sàng lọc (nhánh `vcm-hooks` của kho riêng `Minh10/VVCSoftware_VTM`; bản vá công khai để kiểm toán: [`third_party/vtm_patch/vcm-hooks.patch`](third_party/vtm_patch/vcm-hooks.patch)) | Xong; tắt hook = trùng byte VTM gốc (AI, LDP, RA) |
 | ALF offline (`tools/vcm/alf`) | Xong; **bit-exact** với đầu ra ALF của VTM |
-| Driver nhánh A và B, đánh giá, thống kê | Xong; 74 test tự động |
+| Driver nhánh A và B, đánh giá, thống kê | Xong; 94 test tự động |
+| Độ tin cậy pipeline (căn khung AI, fingerprint cache, pseudo-variant, requested/realised/effective, độ phủ đồ thị) | Xong sau rà soát độc lập ([DECISIONS](docs/DECISIONS.md), 2026-10-28 tối) |
+| Bộ phân bổ QP cho cổng A2 | **Chưa** — chỉ cài khi A1 = GO |
 | Kiểm toán ALF ([docs/ALF_CODEC_AUDIT.md](docs/ALF_CODEC_AUDIT.md)) | Xong |
 | P0 trên máy chủ nhóm, dữ liệu CTC, detector CTC | **Chưa** — cần dữ liệu và tài nguyên của nhóm ([RUNBOOK](docs/RUNBOOK.md)) |
 | Kết quả Go/No-Go của hai nhánh | **Chưa có** |
@@ -23,7 +25,7 @@ nghiên cứu.
 | Nhánh | Tầng codec | Câu hỏi | Điều kiện đi tiếp |
 | --- | --- | --- | --- |
 | **A — RAMU-Lite** | Phân bổ bit (QP theo CTU) | Cấu trúc tham chiếu *có điều kiện theo nhiệm vụ* có dự đoán tác động của một can thiệp ΔQP tốt hơn baseline mạnh (gồm cả lan truyền không phụ thuộc nhiệm vụ) không, và có vượt `--DPF`/`--BIM` sẵn có của VTM về rate–task không? | Cổng A1 rồi A2 |
-| **B — MAPS-ALF** | Bộ lọc trong vòng lặp (ALF APS) | Thiết kế ALF theo méo nhiệm vụ có cải thiện rate–task so với ALF mặc định, ở bitrate thật, sau decoder chuẩn không? | Cổng B-0 (O1-A) rồi B-1 (O1-B) |
+| **B — MAPS-ALF** | Bộ lọc trong vòng lặp (ALF APS) | Thiết kế ALF theo méo nhiệm vụ có cải thiện rate–task so với ALF mặc định, ở bitrate thật, sau decoder chuẩn không? | B-0 (O1-A, chẩn đoán) rồi B-1 (O1-B, quyết định) |
 
 Chi tiết: [docs/RESEARCH_PLAN.md](docs/RESEARCH_PLAN.md). Các phát hiện đã làm thay đổi thiết kế:
 [docs/DECISIONS.md](docs/DECISIONS.md). Ngoài phạm vi giai đoạn này: scaling list, LMCS, hậu xử lý/NNPF,
@@ -39,8 +41,8 @@ tools/vcm/          jobs (mã hoá hàng loạt + manifest), evaluate (mAP, nhã
                     stats (kiểm định theo chuỗi), bd_rate, yuv, detect
 tools/vcm/ramu/     nhánh A: đồ thị tham chiếu, đặc trưng B1–B6, cổng A1, mô phỏng, runner can thiệp
 tools/vcm/alf/      nhánh B: ALF chuẩn VVC (bit-exact), Wiener có trọng số, chiếu hệ số, oracle O1-A, driver
-tests/              74 test
-third_party/        VTM (không commit), VTM_COMMIT
+tests/              94 test
+third_party/        VTM (không commit), VTM_COMMIT, VTM_PROVENANCE, vtm_patch/vcm-hooks.patch (bản vá công khai)
 results/            kết quả tổng hợp (dữ liệu thô không commit)
 ```
 
@@ -60,4 +62,6 @@ Sau đó làm theo [docs/RUNBOOK.md](docs/RUNBOOK.md).
 - BD-rate trên **đoạn đơn điệu chung**, luôn kèm đường cong gốc.
 - Anchor bật cùng công cụ báo hiệu với phương pháp (ví dụ DQP với ΔQP = 0: biến thể `dqp_anchor`).
 - Tham số chỉnh được chọn trên chuỗi `tune`; tối ưu dùng nhãn giả từ khung gốc, không dùng nhãn thật của tập thử.
-- Mọi bitstream giải mã bằng `DecoderApp` không sửa; MD5 ảnh tái tạo của bộ mã và bộ giải mã phải khớp.
+- Mọi bitstream giải mã bằng `DecoderApp` không sửa; MD5 ảnh tái tạo của bộ mã và bộ giải mã phải khớp; số khung giải mã phải đúng số khung mã hoá.
+- Khung giải mã được ghép với nhãn qua khung **nguồn** (`TemporalSubsampleRatio`, `FrameSkip`), không theo thứ tự.
+- Kết quả cache chỉ dùng lại khi fingerprint khớp; pseudo-variant (oracle) không bao giờ được báo như kết quả mã hoá.

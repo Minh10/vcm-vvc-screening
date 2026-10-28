@@ -5,7 +5,8 @@ codec:
   name: VTM
   tag: VTM-24.0
   base_commit: ca331de230f27e0489df9d2fa6c006e2dcd2ed89     # official VTM-24.0
-  repo: https://github.com/Minh10/vvcsoftware_vtm.git          # import of the JVET repository
+  repo: https://github.com/Minh10/VVCSoftware_VTM.git          # import of the JVET repository (private)
+  patch: third_party/vtm_patch/vcm-hooks.patch                 # public: git diff VTM-24.0..vcm-hooks
   branch: vcm-hooks                                            # VTM-24.0 + encoder-side hooks (VCM_HOOKS.md)
   commit: see third_party/VTM_COMMIT                           # written by scripts/fetch_vtm.sh
   configs:

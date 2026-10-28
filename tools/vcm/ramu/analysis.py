@@ -14,6 +14,15 @@ Gate A1 (docs/RESEARCH_PLAN.md), all conditions required:
 3. mean regret of B4 at least 10 % lower than B3,
 4. B4 beats the shuffled-graph control B5: median(rho_B4 − rho_B5) > 0 and Holm-adjusted p < alpha.
 
+Populations (fixed before any result is seen):
+- **primary**: realised interventions (``realised`` from ``vcm.ramu.runner collect``: the target CTU's QP or
+  decisions changed). An unrealised intervention leaves the bitstream unchanged, so it carries no information
+  about propagation; including it would reward predictors of *realisability* rather than of propagation.
+- sensitivity ``all_requested``: every requested intervention (unrealised ones have ΔL = ΔR = 0).
+- sensitivity ``translational``: primary, restricted to CTUs whose inter area is at most ``max_approx_frac``
+  approximate motion (affine/GEO/sub-block; ``graph.coverage``), with edges of approximate CUs dropped.
+The gate decision is taken on the primary population only; the sensitivities are reported next to it.
+
 CLI::
 
     python -m vcm.ramu.analysis --inputs configs/ramu_inputs.yaml --out results/ramu/a1
@@ -36,7 +45,7 @@ from sklearn.preprocessing import StandardScaler
 
 from ..stats import holm, paired_test
 from .features import FEATURE_SETS, assemble, importance_from_boxes
-from .graph import Picture, build_edges, load_trace, node_table, shuffle_edges
+from .graph import Picture, build_edges, coverage, load_trace, node_table, shuffle_edges
 
 MODELS = ["B0", *FEATURE_SETS]
 
@@ -51,9 +60,10 @@ def make_model(kind: str, seed: int):
 
 
 def build_sequence_table(name: str, pic: Picture, trace: pd.DataFrame, boxes: pd.DataFrame,
-                         interventions: pd.DataFrame, rho: float = 0.5, shuffle_seed: int = 0) -> pd.DataFrame:
+                         interventions: pd.DataFrame, rho: float = 0.5, shuffle_seed: int = 0,
+                         exclude_approx: bool = False) -> pd.DataFrame:
     """One row per intervention, with all features computed from the baseline encode only (no leakage)."""
-    edges = build_edges(trace, pic)
+    edges = build_edges(trace, pic, exclude_approx=exclude_approx)
     nodes = assemble(node_table(trace, pic), importance_from_boxes(boxes, pic), edges,
                      shuffle_edges(edges, shuffle_seed), rho)
     df = interventions.merge(nodes, on=["poc", "ctu_addr"], how="left", validate="many_to_one")
@@ -178,24 +188,56 @@ def main(argv=None) -> int:
     spec = yaml.safe_load(Path(a.inputs).read_text())
     rho, kind, frac, seed = spec.get("rho", 0.5), spec.get("model", "gbr"), spec.get("topk_frac", 0.1), \
         spec.get("seed", 0)
-    tables, singles, pairs = [], [], []
+    max_approx = spec.get("max_approx_frac", 0.25)
+    tables, tables_tr, singles, pairs, cover = [], [], [], [], {}
     for s in spec["sequences"]:
         pic = Picture(s["width"], s["height"], s.get("ctu", 128))
         iv = pd.read_csv(s["interventions"])
-        tables.append(build_sequence_table(s["name"], pic, load_trace(s["trace"]), pd.read_csv(s["boxes"]), iv,
-                                           rho, seed))
+        trace = load_trace(s["trace"])
+        cover[s["name"]] = coverage(trace)
+        tables.append(build_sequence_table(s["name"], pic, trace, pd.read_csv(s["boxes"]), iv, rho, seed))
+        tables_tr.append(build_sequence_table(s["name"], pic, trace, pd.read_csv(s["boxes"]), iv, rho, seed,
+                                              exclude_approx=True))
         singles.append(iv.assign(sequence=s["name"]))
         if s.get("pairs"):
             pairs.append(pd.read_csv(s["pairs"]).assign(sequence=s["name"]))
-    df = pd.concat(tables, ignore_index=True)
-    scores = score_models(df, kind, frac, seed)
-    gate = gate_a1(scores, seed=seed)
+    df_all = pd.concat(tables, ignore_index=True)
+    df_tr = pd.concat(tables_tr, ignore_index=True)
+    if "realised" in df_all.columns:
+        keep = df_all["realised"].astype(bool)
+        population_note = f"realised {int(keep.sum())} of {len(df_all)} requested"
+    else:
+        keep = pd.Series(True, index=df_all.index)
+        population_note = "realisation unknown (no intervention traces): all requested interventions used"
+    populations = {
+        "primary": df_all[keep].reset_index(drop=True),
+        "all_requested": df_all,
+        "translational": df_tr[keep & (df_tr["approx_frac"] <= max_approx)].reset_index(drop=True),
+    }
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    df.to_csv(out / "design.csv", index=False)
+    df_all.to_csv(out / "design.csv", index=False)
+    (out / "coverage.json").write_text(json.dumps(cover, indent=2))
+    results = {}
+    for name, df in populations.items():
+        sc = score_models(df, kind, frac, seed)
+        results[name] = (sc, gate_a1(sc, seed=seed), len(df))
+    scores, gate, _ = results["primary"]
     scores.to_csv(out / "scores.csv", index=False)
+    gate["population"] = population_note
     (out / "gate_a1.json").write_text(json.dumps(gate, indent=2))
+    sens = {k: {"n": n, **g} for k, (_, g, n) in results.items() if k != "primary"}
+    (out / "gate_a1_sensitivity.json").write_text(json.dumps(sens, indent=2, default=str))
     text = report(scores, gate)
+    text += f"\n_Population: {population_note}._\n\n## Sensitivity (not used for the decision)\n\n"
+    text += "| Population | n | Decision |\n| --- | --- | --- |\n"
+    for k, v in sens.items():
+        text += f"| {k} | {v['n']} | {v['decision']} |\n"
+    text += "\n## Motion-model coverage (share of inter area)\n\n| Sequence | approximate | by flag |\n| --- | --- | --- |\n"
+    for k, c in cover.items():
+        approx = f"{100 * c['approx_frac_of_inter']:.1f} %" if c["known"] else "unknown (old trace)"
+        flags = ", ".join(f"{f} {100 * v:.1f} %" for f, v in c["by_flag"].items()) or "—"
+        text += f"| {k} | {approx} | {flags} |\n"
     if pairs:
         inter = interactions(pd.concat(singles), pd.concat(pairs))
         inter.to_csv(out / "interactions.csv", index=False)

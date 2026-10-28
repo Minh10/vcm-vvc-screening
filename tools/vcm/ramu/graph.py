@@ -2,11 +2,24 @@
 
 Trace format (one row per final CU of the baseline encode, written by the VTM trace hook):
 
-    poc, coding_order, temporal_id, x, y, w, h, qp, mode, ref_poc0, mv0x, mv0y, ref_poc1, mv1x, mv1y, resid_energy
+    poc, coding_order, temporal_id, x, y, w, h, qp, mode, ref_poc0, mv0x, mv0y, ref_poc1, mv1x, mv1y, resid_energy,
+    flags, mv_spread, ref_mixed
 
 - ``mode`` is one of ``intra``, ``inter``, ``skip`` (skip = inter with no residual).
-- ``ref_pocN = -1`` when list N is unused. MVs are in **luma samples** (the hook divides VTM's internal 1/16 units).
+- ``ref_pocN = -1`` when list N is unused. MVs are in **luma samples** (the hook divides VTM's internal 1/16 units)
+  and are read from the picture's stored motion field at the CU **centre** (for affine/GEO/sub-block CUs this is
+  the translational approximation; for translational CUs it is exact).
+- ``flags``: ``|``-separated tools of the CU (``affine4``, ``affine6``, ``geo``, ``ciip``, ``mmvd``, ``ibc``,
+  ``plt``); ``mv_spread``: max |4x4 sub-block MV − centre MV| in luma samples (L-inf); ``ref_mixed``: 4x4
+  sub-blocks whose reference/list usage differs from the centre (GEO with two references).
 - ``coding_order`` is the frame's position in decoding order.
+
+Coverage. The overlap model is exact (up to interpolation taps) only for translational CUs. A CU is
+**approximate** when it is GEO, has ``mv_spread`` > ``spread_tol`` (affine with non-uniform motion, sub-block
+TMVP) or mixed references; an affine CU whose sub-block MVs are all equal is translational; CIIP is translational for its inter part but blends an intra prediction (its edges carry the full
+weight here, flagged ``ciip``). ``coverage`` reports the area shares; ``build_edges(..., exclude_approx=True)`` and
+``node_table`` (``approx_frac``) support the sensitivity analysis that drops approximate CUs/CTUs. Traces written
+before these columns existed load with ``mv_spread = NaN`` (coverage unknown).
 
 Node = (poc, ctu_addr). Edge u -> v carries the fraction of CTU v's area predicted from samples inside CTU u:
 for every inter CU in v and every used list, the motion-shifted CU rectangle (clipped to the picture) is
@@ -24,6 +37,9 @@ import pandas as pd
 
 TRACE_COLUMNS = ("poc", "coding_order", "temporal_id", "x", "y", "w", "h", "qp", "mode",
                  "ref_poc0", "mv0x", "mv0y", "ref_poc1", "mv1x", "mv1y", "resid_energy")
+COVERAGE_COLUMNS = ("flags", "mv_spread", "ref_mixed")
+APPROX_FLAGS = ("geo",)   # affine / sub-block CUs are approximate only when their sub-block MVs differ
+SPREAD_TOL = 0.25          # luma samples
 
 Node = tuple[int, int]
 
@@ -58,7 +74,34 @@ def load_trace(path) -> pd.DataFrame:
     bad = set(df["mode"]) - {"intra", "inter", "skip"}
     if bad:
         raise ValueError(f"unknown CU modes in trace: {bad}")
+    if "flags" not in df.columns:
+        df["flags"], df["mv_spread"], df["ref_mixed"] = "", np.nan, 0
+    df["flags"] = df["flags"].fillna("").astype(str)
     return df
+
+
+def approximate_mask(trace: pd.DataFrame, spread_tol: float = SPREAD_TOL) -> pd.Series:
+    """True for inter CUs whose motion is not a single translation (see module docstring)."""
+    inter = trace["mode"] != "intra"
+    flagged = trace["flags"].str.split("|").apply(lambda f: any(x in APPROX_FLAGS for x in f))
+    spread = trace["mv_spread"].fillna(0.0) > spread_tol
+    return inter & (flagged | spread | (trace["ref_mixed"] > 0))
+
+
+def coverage(trace: pd.DataFrame, spread_tol: float = SPREAD_TOL) -> dict:
+    """Area shares of the inter CUs: translational vs approximate, and per tool flag."""
+    area = trace["w"] * trace["h"]
+    inter = trace["mode"] != "intra"
+    inter_area = float(area[inter].sum())
+    out = {"inter_area_frac": float(area[inter].sum() / area.sum()) if len(trace) else 0.0,
+           "known": bool(trace["mv_spread"].notna().all())}
+    if inter_area == 0:
+        return {**out, "approx_frac_of_inter": 0.0, "by_flag": {}}
+    approx = approximate_mask(trace, spread_tol)
+    flags = trace.loc[inter, "flags"].str.split("|").explode()
+    by_flag = {f: float(area[inter][flags[flags == f].index.unique()].sum() / inter_area)
+               for f in sorted(set(flags) - {""})}
+    return {**out, "approx_frac_of_inter": float(area[approx].sum() / inter_area), "by_flag": by_flag}
 
 
 def _overlaps(pic: Picture, x0: float, y0: float, w: float, h: float):
@@ -77,9 +120,13 @@ def _overlaps(pic: Picture, x0: float, y0: float, w: float, h: float):
                 yield r * pic.cols + c, ox * oy
 
 
-def build_edges(trace: pd.DataFrame, pic: Picture) -> dict[tuple[Node, Node], float]:
+def build_edges(trace: pd.DataFrame, pic: Picture, exclude_approx: bool = False,
+                spread_tol: float = SPREAD_TOL) -> dict[tuple[Node, Node], float]:
     edges: dict[tuple[Node, Node], float] = defaultdict(float)
-    inter = trace[trace["mode"] != "intra"]
+    keep = trace["mode"] != "intra"
+    if exclude_approx and "flags" in trace.columns:
+        keep &= ~approximate_mask(trace, spread_tol)
+    inter = trace[keep]
     for row in inter.itertuples(index=False):
         lists = [(row.ref_poc0, row.mv0x, row.mv0y), (row.ref_poc1, row.mv1x, row.mv1y)]
         used = [(int(rp), mx, my) for rp, mx, my in lists if rp >= 0]
@@ -104,18 +151,20 @@ def node_table(trace: pd.DataFrame, pic: Picture) -> pd.DataFrame:
     t["mv_mag"] = np.hypot(t["mv0x"].where(t["ref_poc0"] >= 0, 0.0), t["mv0y"].where(t["ref_poc0"] >= 0, 0.0))
     t["mv_area"] = t["mv_mag"] * t["area"]
     t["qp_area"] = t["qp"] * t["area"]
+    t["approx_area"] = (approximate_mask(t) if "flags" in t.columns else False) * t["area"]
     g = t.groupby(["poc", "ctu_addr"], as_index=False).agg(
         coding_order=("coding_order", "first"), temporal_id=("temporal_id", "first"),
         area=("area", "sum"), skip=("is_skip", "sum"), intra=("is_intra", "sum"),
         mv_area=("mv_area", "sum"), qp_area=("qp_area", "sum"), resid_energy=("resid_energy", "sum"),
-        n_cu=("x", "size"))
+        approx_area=("approx_area", "sum"), n_cu=("x", "size"))
     g["skip_frac"] = g["skip"] / g["area"]
     g["intra_frac"] = g["intra"] / g["area"]
     g["mean_mv"] = g["mv_area"] / g["area"]
     g["mean_qp"] = g["qp_area"] / g["area"]
     g["log_resid"] = np.log1p(g["resid_energy"])
+    g["approx_frac"] = g["approx_area"] / g["area"]       # bookkeeping for sensitivity analyses, not a feature
     return g[["poc", "ctu_addr", "coding_order", "temporal_id", "n_cu", "skip_frac", "intra_frac",
-              "mean_mv", "mean_qp", "log_resid"]]
+              "mean_mv", "mean_qp", "log_resid", "approx_frac"]]
 
 
 def shuffle_edges(edges: dict[tuple[Node, Node], float], seed: int = 0) -> dict[tuple[Node, Node], float]:

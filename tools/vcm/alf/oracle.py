@@ -1,11 +1,13 @@
-"""O1-A: gradient-based upper bound for luma ALF coefficients (outside the codec).
+"""O1-A: gradient-based relaxed oracle for luma ALF coefficients (outside the codec).
 
 The ALF is differentiable in its coefficients: out = rec + sum_j Phi_j * g[class, j] with Phi from
 ``spec.design_matrix`` (clipping indices fixed). We optimise g (25 x 12, real-valued, no rounding) for a task
 loss on the decoded picture, with the decoded chroma held fixed.
 
-The result is an **upper bound**: real-valued coefficients, no APS signalling cost, per-picture optimisation,
-no effect on reference pictures. It must never be reported as a codec result (docs/RESEARCH_PLAN.md, O1-A).
+The result is a **relaxed, approximate oracle**, not a guaranteed upper bound: it relaxes the codec (real-valued
+coefficients, no APS cost, no effect on reference pictures) but also restricts it (one filter set per picture on
+every CTB, fixed clipping indices; no per-CTB on/off or APS choice) and the optimisation is local. It can be worse
+than the anchor's real ALF output and must never be reported as a codec result (docs/RESEARCH_PLAN.md, O1-A).
 Losses use the detector's outputs on the *original* frame as targets (pseudo-labels), never test ground truth.
 """
 

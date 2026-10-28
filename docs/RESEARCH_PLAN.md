@@ -1,6 +1,7 @@
 # Kế hoạch sàng lọc hai nhánh
 
-Trạng thái: công cụ và hook VTM sẵn sàng, đã kiểm chứng trên clip tổng hợp (2026-10-28). Chưa có kết quả trên dữ
+Trạng thái: công cụ và hook VTM sẵn sàng, đã kiểm chứng trên clip tổng hợp; lỗi độ tin cậy của pipeline do rà soát
+độc lập chỉ ra đã sửa (2026-10-28, tối). Chưa có kết quả trên dữ
 liệu CTC. Thời lượng dự kiến 2–3 tuần trên máy chủ nhóm sau khi điền `configs/experiment.yaml`.
 
 Nguyên tắc: mỗi nhánh là một giả thuyết **bác bỏ được**, có cổng Go/No-Go đặt trước. Không nhánh nào được mặc định
@@ -37,9 +38,14 @@ Phát hiện đã đưa vào thiết kế:
   B5 có ý nghĩa thống kê ngay cả khi chỉ *số lượng* tham chiếu quan trọng.
 - **VTM-24.0 đã có hai công cụ chỉnh QP/λ theo lan truyền tham chiếu**: `DPF` (mã hoá trước, hệ số lan truyền
   méo) và `BIM` (độ quan trọng khối từ MCTF). Cả hai là đối chứng bắt buộc ở A2 (`configs/variants.yaml`).
-- **Chỉ CTU có phần dư mới can thiệp được.** `cu_qp_delta` không được gửi khi CU không có phần dư; can thiệp lên
-  CTU toàn skip không có hiệu lực. `runner sample` chỉ lấy CTU hợp lệ. Trên clip thử ở QP 27 chỉ 24/48 CTU hợp lệ;
-  ở QP cao của CTC tỉ lệ này cần được đo ngay ở pilot vì nó giới hạn không gian hành động.
+- **Requested ≠ realised ≠ effective.** Mỗi lần chạy can thiệp có trace riêng; `runner collect` phân loại từng can
+  thiệp (không xảy ra / xảy ra nhưng không đổi bitstream / có tác động). Phân tích chính chỉ dùng can thiệp realised;
+  mọi can thiệp requested là phân tích độ nhạy. Không lọc trước theo phần dư: λ đổi có thể đổi quyết định RD ngay
+  cả ở CTU mà anchor không có phần dư (3/8 CTU như vậy có tác động trên clip thử). Đính chính phát biểu ngày
+  2026-10-28 (chiều), xem DECISIONS.
+- **Độ phủ của đồ thị.** Mô hình chồng lấn chỉ chính xác với CU tịnh tiến; tỉ lệ CU xấp xỉ (affine không đều, GEO,
+  sub-block) được báo cáo theo chuỗi và có phân tích độ nhạy loại chúng ([RAMU_LITE_SPEC.md](RAMU_LITE_SPEC.md)).
+- **Bộ phân bổ QP của A2 chưa được cài đặt.** Chỉ cài sau khi A1 = GO; trước đó A2 không được coi là sẵn sàng.
 - **Cỡ mẫu.** Mô phỏng (`vcm.ramu.simulate`, 15 lần mỗi kịch bản, 12 chuỗi): tỉ lệ GO 11/15 (73%) khi có hiệu ứng
   vừa phải, 0/15 khi null. Độ nhạy 73% là thấp; bước xác nhận dùng **16–20 chuỗi**.
 
@@ -53,8 +59,8 @@ bộ giải mã chuẩn.
 
 | Bậc | Thí nghiệm | Cách chạy | Vai trò |
 | --- | --- | --- | --- |
-| B0 | ALF bật vs tắt, cùng bitrate | biến thể `alf_default` vs `alf_off` | Chặn trên thô cho cả nhánh |
-| O1-A | Hệ số số thực tối ưu bằng gradient qua loss nhiệm vụ, xuất phát từ chính bộ lọc của anchor | `experiments oracle --variant-dir` | **Upper bound**, cùng bitrate với anchor, không tính APS và tham chiếu |
+| B0 | ALF bật vs tắt | biến thể `alf_default` vs `alf_off` | ALF có tác động tới nhiệm vụ không (đường rate–task, không phải cùng bitrate) |
+| O1-A | Oracle **nới lỏng, xấp xỉ**: một bộ hệ số số thực mỗi ảnh, áp cho mọi CTB, tối ưu cục bộ bằng gradient qua loss nhiệm vụ, xuất phát từ bộ lọc dùng nhiều nhất của anchor | `experiments oracle --variant-dir` | Chẩn đoán headroom. **Không** phải chặn trên bảo đảm: bỏ APS, lượng tử, hiệu ứng tham chiếu nhưng cũng bỏ bật/tắt theo CTB và lựa chọn APS của anchor; có thể thua ALF thật của anchor. Pseudo-variant `o1a_relaxed_oracle`, bitrate chép từ anchor |
 | O1-A′ | Hệ số O1-A chiếu về cú pháp hợp lệ, ép vào mọi CTB qua `--VCMAlfExternalFile` | `oracle` → biến thể `alf_external` | Tổn thất do chuẩn hoá (lượng tử, APS 25 bộ lọc, tham chiếu) |
 | O1-B | Wiener có trọng số nhiệm vụ **trong** bộ mã ALF của VTM (thiết kế, gộp lớp, bật/tắt CTB, chọn APS theo RD có trọng số) | `experiments weights` → `--VCMAlfWeightDir` | **Bằng chứng quyết định** |
 | O1-B-ép | Wiener có trọng số thiết kế offline, ép mọi CTB | `experiments wiener --weights` → `alf_external` | Tách "tiêu chí" khỏi "cơ chế chọn của VTM" |
@@ -64,7 +70,7 @@ Mục tiêu tối ưu dùng đầu ra detector trên khung gốc (nhãn giả); 
 
 | Cổng | Tiêu chí | Nếu trượt |
 | --- | --- | --- |
-| B-0 | O1-A cải thiện mAP vượt biến thiên giữa các chuỗi ở QP giữa | Dừng nhánh B sớm |
+| B-0 | O1-A cải thiện mAP vượt biến thiên giữa các chuỗi ở QP giữa, và loss nhiệm vụ của O1-A thấp hơn ALF thật của anchor trên đa số ảnh | Hạ ưu tiên: chỉ chạy O1-B trên pilot, không chạy O1-A′/mở rộng. Không kết luận "không có headroom" vì O1-A không phải chặn trên |
 | B-1 | O1-B cải thiện nhất quán so với `alf_default`, hiệu ứng cặp theo chuỗi có CI không chứa 0 | No-Go; ghi kết quả âm, dồn lực cho nhánh A |
 
 Phát hiện đã đưa vào thiết kế:
@@ -73,6 +79,34 @@ Phát hiện đã đưa vào thiết kế:
 - APS 25 bộ lọc không gộp tốn ~2.600 bit/ảnh trên clip thử. O1-A′ vì vậy có thể thua ở bitrate thấp ngay cả khi
   O1-A có headroom; O1-B (có gộp theo RD) là bậc quyết định.
 - Rủi ro biết trước: Kim et al. (ETRI Journal 2024) thấy deblocking ảnh hưởng tới nhiệm vụ máy nhiều hơn ALF.
+
+## Độ tin cậy của pipeline (bắt buộc trước P0)
+
+- **Căn khung.** Khung giải mã k = khung nguồn `FrameSkip + k·TemporalSubsampleRatio` (đọc từ cfg và tham số biến
+  thể, ghi vào manifest). Nhãn GT có `frame_index` = chỉ số khung **nguồn** (cho phép thưa). Chỉ chấm các ảnh GT của
+  khung đã mã hoá; khung không mã hoá bị loại khỏi GT, không bị tính là bỏ sót. Số khung giải mã phải đúng
+  `ceil(frames / step)`. Cấu hình AI của VTM dùng step 8.
+- **Fingerprint.** Kết quả mã hoá chỉ được dùng lại khi trùng fingerprint: lệnh, nội dung cfg, SHA-256 bộ mã và bộ
+  giải mã, chữ ký đầu vào, nội dung mọi tệp/thư mục hook đầu vào, commit VTM. Chỉ số nhiệm vụ chỉ được dùng lại khi
+  trùng detector (spec + nội dung tệp trọng số), MD5 ảnh giải mã, GT, step và nguồn nhãn giả. `--strict-cache` biến
+  cache lệch thành lỗi.
+- **Hook đầu vào** phải tồn tại trước khi mã hoá; biến thể có tham số `{sequence}`, `{structure}`, `{qp}`.
+- **Biến thể chỉ ghi** (trace, dump) phải cho bitstream trùng byte với biến thể gốc (`same_bitstream_as`).
+- **Tách nhánh** được kiểm tra bằng mã: `vcm.jobs` từ chối chạy chung biến thể nhánh A và B.
+- **Pseudo-variant** (O1-A) bị `vcm.curves` từ chối nếu không có `--allow-pseudo`; báo cáo khi đó mang nhãn "không
+  phải kết quả mã hoá". Không so các dòng do detector khác nhau chấm.
+- **Kiểm toán độc lập bản vá VTM.** Kho VTM của nhóm là riêng tư; toàn bộ thay đổi (12 tệp, +439/−3 dòng) được xuất
+  thành `third_party/vtm_patch/vcm-hooks.patch` trong kho công khai này. Áp bản vá lên VTM-24.0 chính thức cho đúng
+  cây (tree) của nhánh `vcm-hooks`; `scripts/fetch_vtm.sh` tự kiểm điều này.
+
+## Chi phí triển khai
+
+Cả hai nhánh hiện là tối ưu **ngoại tuyến**: nhánh A cần một lượt mã hoá anchor để lấy đồ thị (≥ 2 lần mã hoá cho
+mỗi bitstream đầu ra), `--DPF` cũng cần mã hoá trước; nhánh B chạy detector trên khung gốc ở phía bộ mã. Mọi tuyên
+bố về khả năng triển khai (thiết bị biên, độ trễ) phải kèm: số lần mã hoá trên một bitstream, thời gian tiền phân
+tích (detector, lượt anchor, tính trọng số), thời gian mã hoá (`encode_seconds` trong manifest), thời gian detector
+(`detector_seconds` trong `task_metrics.json`) và độ trễ cấu trúc (lookahead). Các con số này được báo cùng kết quả
+A2/B-1; phương pháp nào cần lookahead dài hơn đối chứng phải được so ở cùng độ trễ hoặc nêu rõ chênh lệch.
 
 ## Thống kê
 

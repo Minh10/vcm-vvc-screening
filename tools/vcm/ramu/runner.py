@@ -1,15 +1,28 @@
 """RAMU-Lite intervention pipeline: sample -> run -> collect.
 
 1. ``sample``  From the baseline (DQP-enabled anchor) trace, pick CTUs for a single ΔQP intervention, stratified by
-   local importance, reference fan-out and motion. Only *valid* CTUs are eligible: CTUs with a coded luma residual
-   in the baseline. A CTU coded entirely without residual sends no cu_qp_delta, so a QP change cannot act on it
-   (verified on VTM-24.0 + vcm-hooks; docs/ALF_CODEC_AUDIT.md). Optionally also samples intervention pairs on the
+   local importance, reference fan-out and motion. All CTUs are eligible by default; whether the CTU had a coded
+   luma residual in the anchor is recorded (``resid_in_anchor``) but not used to filter, because a QP/λ change can
+   alter the RD decisions (and so create a residual) even where the anchor had none. ``--require-residual``
+   restores the residual-only pool as a sensitivity option. Optionally also samples intervention pairs on the
    same / different reference branches for the interaction diagnostic.
-2. ``run``     One full encode + unmodified decode per intervention (``--VCMQpOffsetFile``), plus the anchor
-   (header-only offset file, ``--VCMTraceFile`` for the trace). Uses ``vcm.jobs.run_job``.
+2. ``run``     One full encode + unmodified decode per intervention (``--VCMQpOffsetFile``), each with its own CU
+   trace (``--VCMTraceFile``, output-only), plus the anchor. Uses ``vcm.jobs.run_job``.
 3. ``collect`` After ``python -m vcm.evaluate --results <runs> --pseudo <original>``: ΔR = actual bits − anchor bits;
    ΔL = (pseudo_map_anchor − pseudo_map) / 100 (loss = 1 − AP against the detector's own outputs on the original
    frames; ground-truth mAP difference kept as ``delta_map_gt`` for reporting only).
+
+Requested / realised / effective (each intervention gets one ``status``):
+
+* requested     — the offset file asked for ΔQP on the target CTU (every row);
+* realised      — the intervention trace differs from the anchor trace **in the target CTU**: some CU's final QP
+                  (as the decoder derives it) or its decisions (partition, mode, tools, references, motion) changed;
+* effective     — the bitstream differs from the anchor's; ``delta_bits`` / ``delta_loss`` then measure the effect.
+
+``status`` ∈ {``not_realised``, ``realised_no_effect``, ``effective``, ``unexplained``}; ``unexplained`` (bitstream
+changed although the target CTU's trace did not) indicates a hole in the trace and must be investigated. The A1
+primary analysis uses realised interventions; all requested ones form a sensitivity analysis
+(docs/RAMU_LITE_SPEC.md).
 
 CLI::
 
@@ -30,7 +43,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ..jobs import Job, find_binary, load_sequences, run_job
+from ..jobs import Job, find_binary, load_sequences, run_job, vtm_provenance
 from .features import assemble, importance_from_boxes
 from .graph import Picture, build_edges, load_trace, node_table, shuffle_edges
 
@@ -51,13 +64,14 @@ def _split(x: pd.Series) -> pd.Series:
     return (x > x.median()).astype(int)
 
 
-def sample(nodes: pd.DataFrame, n: int, seed: int = 0, delta_qp: int = -2) -> pd.DataFrame:
-    """Stratified sample of valid CTUs: 2 (importance) x 2 (fan-out) x 2 (motion) strata, equal allocation,
-    remaining quota filled at random from the valid pool."""
+def sample(nodes: pd.DataFrame, n: int, seed: int = 0, delta_qp: int = -2,
+           require_residual: bool = False) -> pd.DataFrame:
+    """Stratified sample of CTUs: 2 (importance) x 2 (fan-out) x 2 (motion) strata, equal allocation, remaining
+    quota filled at random from the pool. The pool is every CTU, or only CTUs with an anchor residual."""
     rng = np.random.default_rng(seed)
-    v = nodes[nodes["valid"]].copy()
+    v = (nodes[nodes["valid"]] if require_residual else nodes).copy()
     if len(v) == 0:
-        raise ValueError("no valid CTU (no coded residual anywhere in the baseline)")
+        raise ValueError("empty pool (no coded residual anywhere in the baseline)")
     v["stratum"] = _split(v["imp"]) * 4 + _split(v["fanout1"]) * 2 + _split(v["mean_mv"])
     per = max(1, n // 8)
     picks = []
@@ -66,7 +80,7 @@ def sample(nodes: pd.DataFrame, n: int, seed: int = 0, delta_qp: int = -2) -> pd
     rest = v.index.difference(picks)
     if len(picks) < n and len(rest):
         picks.extend(rng.choice(rest, size=min(n - len(picks), len(rest)), replace=False))
-    out = v.loc[picks[:n], ["poc", "ctu_addr", "stratum"]].copy()
+    out = v.loc[picks[:n], ["poc", "ctu_addr", "stratum", "valid"]].rename(columns={"valid": "resid_in_anchor"})
     out.insert(2, "delta_qp", delta_qp)
     return out.sort_values(["poc", "ctu_addr"]).reset_index(drop=True)
 
@@ -110,55 +124,131 @@ def _pair_variant(row, dqp: int) -> str:
     return f"pair_p{int(row.poc_a)}_c{int(row.ctu_a)}_p{int(row.poc_b)}_c{int(row.ctu_b)}_d{dqp}"
 
 
+def _trace_arg(run_dir: Path, variant: str) -> str:
+    return f"--VCMTraceFile={run_dir / 'traces' / (variant + '.csv')}"
+
+
 def build_jobs(cand_dir: Path, seq, structure: str, qp: int, run_dir: Path) -> list[Job]:
     offsets = run_dir / "offsets"
     offsets.mkdir(parents=True, exist_ok=True)
+    (run_dir / "traces").mkdir(parents=True, exist_ok=True)
     empty = offsets / "anchor.csv"
     empty.write_text("poc,ctu_addr,delta_qp\n")
-    jobs = [Job(seq, structure, qp, ANCHOR, (f"--VCMQpOffsetFile={empty}",
-                                            f"--VCMTraceFile={run_dir / 'anchor_trace.csv'}"))]
+    jobs = [Job(seq, structure, qp, ANCHOR, (f"--VCMQpOffsetFile={empty}", _trace_arg(run_dir, ANCHOR)))]
     if not (cand_dir / "candidates.csv").exists():
         return jobs          # anchor first: the candidates are sampled from its trace
     singles = pd.read_csv(cand_dir / "candidates.csv")
     for r in singles.itertuples(index=False):
         f = offsets / f"{_variant(r)}.csv"
         f.write_text(f"poc,ctu_addr,delta_qp\n{r.poc},{r.ctu_addr},{r.delta_qp}\n")
-        jobs.append(Job(seq, structure, qp, _variant(r), (f"--VCMQpOffsetFile={f}",)))
+        jobs.append(Job(seq, structure, qp, _variant(r), (f"--VCMQpOffsetFile={f}", _trace_arg(run_dir, _variant(r)))))
     pairs_path = cand_dir / "pairs.csv"
     if pairs_path.exists():
         dqp = int(singles["delta_qp"].iloc[0])
         for r in pd.read_csv(pairs_path).itertuples(index=False):
             f = offsets / f"{_pair_variant(r, dqp)}.csv"
             f.write_text(f"poc,ctu_addr,delta_qp\n{r.poc_a},{r.ctu_a},{dqp}\n{r.poc_b},{r.ctu_b},{dqp}\n")
-            jobs.append(Job(seq, structure, qp, _pair_variant(r, dqp), (f"--VCMQpOffsetFile={f}",)))
+            v = _pair_variant(r, dqp)
+            jobs.append(Job(seq, structure, qp, v, (f"--VCMQpOffsetFile={f}", _trace_arg(run_dir, v))))
     return jobs
 
 
-def collect(run_dir: Path, cand_dir: Path, structure: str, qp: int, seq_name: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+DECISION_COLUMNS = ("mode", "qp", "ref_poc0", "mv0x", "mv0y", "ref_poc1", "mv1x", "mv1y", "flags")
+CU_KEY = ["poc", "x", "y", "w", "h"]
+
+
+def _ctu_cus(trace: pd.DataFrame, pic: Picture) -> pd.DataFrame:
+    t = trace.copy()
+    t["ctu_addr"] = [pic.ctu_addr(x, y) for x, y in zip(t["x"], t["y"])]
+    return t
+
+
+def trace_changes(anchor: pd.DataFrame, test: pd.DataFrame, pic: Picture) -> pd.DataFrame:
+    """Per (poc, ctu_addr) present in either trace: did the CU partition, a CU's QP or its decisions change?"""
+    cols = [c for c in DECISION_COLUMNS if c in anchor.columns and c in test.columns]
+    a, b = _ctu_cus(anchor, pic), _ctu_cus(test, pic)
+    m = a[CU_KEY + ["ctu_addr"] + cols].merge(b[CU_KEY + ["ctu_addr"] + cols], on=CU_KEY + ["ctu_addr"],
+                                               how="outer", suffixes=("_a", "_b"), indicator=True)
+    part = m["_merge"] != "both"
+    qp = (m["qp_a"] != m["qp_b"]) & ~part
+    dec = part.copy()
+    for c in cols:
+        x, y = m[f"{c}_a"], m[f"{c}_b"]
+        dec |= ~((x == y) | (x.isna() & y.isna()))
+    m["qp_changed"], m["decision_changed"], m["partition_changed"] = qp, dec, part
+    return m.groupby(["poc", "ctu_addr"], as_index=False)[["qp_changed", "decision_changed",
+                                                           "partition_changed"]].any()
+
+
+def realisation(anchor: pd.DataFrame, test: pd.DataFrame, pic: Picture, targets: list[tuple[int, int]]) -> dict:
+    ch = trace_changes(anchor, test, pic).set_index(["poc", "ctu_addr"])
+    out = {"ctus_changed": int(ch["decision_changed"].sum())}
+    realised = []
+    for i, t in enumerate(targets):
+        row = ch.loc[t] if t in ch.index else None
+        q = bool(row is not None and row["qp_changed"])
+        d = bool(row is not None and row["decision_changed"])
+        sfx = "" if len(targets) == 1 else f"_{'ab'[i]}"
+        out[f"qp_realised{sfx}"], out[f"decision_changed_target{sfx}"] = q, d
+        realised.append(q or d)
+    out["realised"] = all(realised)
+    out["realised_any"] = any(realised)
+    return out
+
+
+def _status(realised_any: bool, bitstream_changed: bool) -> str:
+    if bitstream_changed:
+        return "effective" if realised_any else "unexplained"
+    return "realised_no_effect" if realised_any else "not_realised"
+
+
+def collect(run_dir: Path, cand_dir: Path, structure: str, qp: int, seq_name: str,
+            pic: Picture | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     def load(variant):
         d = run_dir / f"{seq_name}__{structure}__qp{qp}__{variant}"
         man = json.loads((d / "manifest.json").read_text())
         tm = json.loads((d / "task_metrics.json").read_text())
-        return man["bits"], tm
+        return man, tm
 
-    a_bits, a_tm = load(ANCHOR)
+    a_man, a_tm = load(ANCHOR)
     key = "pseudo_map" if "pseudo_map" in a_tm else "map"
+    a_trace = load_trace(_anchor_trace(run_dir))
+    if pic is None:
+        s = a_man["job"]["sequence"]
+        pic = Picture(s["width"], s["height"])
 
-    def deltas(variant):
-        bits, tm = load(variant)
-        return bits - a_bits, (a_tm[key] - tm[key]) / 100.0, tm["map"] - a_tm["map"]
+    def measure(variant, targets):
+        man, tm = load(variant)
+        r = {"delta_bits": man["bits"] - a_man["bits"], "delta_loss": (a_tm[key] - tm[key]) / 100.0,
+             "delta_map_gt": tm["map"] - a_tm["map"],
+             "bitstream_changed": man["bitstream_sha256"] != a_man["bitstream_sha256"]}
+        tpath = run_dir / "traces" / f"{variant}.csv"
+        if tpath.exists():
+            r.update(realisation(a_trace, load_trace(tpath), pic, targets))
+            r["status"] = _status(r["realised_any"], r["bitstream_changed"])
+        else:
+            r["status"] = "effective" if r["bitstream_changed"] else "no_trace_unchanged"
+        return r
 
     singles = pd.read_csv(cand_dir / "candidates.csv")
-    d = [deltas(_variant(r)) for r in singles.itertuples(index=False)]
-    singles["delta_bits"], singles["delta_loss"], singles["delta_map_gt"] = zip(*d) if d else ([], [], [])
+    rows = [measure(_variant(r), [(int(r.poc), int(r.ctu_addr))]) for r in singles.itertuples(index=False)]
+    singles = pd.concat([singles, pd.DataFrame(rows, index=singles.index)], axis=1)
     singles["loss_source"] = key
     pairs = pd.DataFrame()
     if (cand_dir / "pairs.csv").exists():
         pairs = pd.read_csv(cand_dir / "pairs.csv")
         dqp = int(singles["delta_qp"].iloc[0])
-        d = [deltas(_pair_variant(r, dqp)) for r in pairs.itertuples(index=False)]
-        pairs["delta_bits"], pairs["delta_loss"], pairs["delta_map_gt"] = zip(*d) if d else ([], [], [])
+        rows = [measure(_pair_variant(r, dqp), [(int(r.poc_a), int(r.ctu_a)), (int(r.poc_b), int(r.ctu_b))])
+                for r in pairs.itertuples(index=False)]
+        pairs = pd.concat([pairs, pd.DataFrame(rows, index=pairs.index)], axis=1)
     return singles, pairs
+
+
+def _anchor_trace(run_dir: Path) -> Path:
+    for p in (run_dir / "traces" / f"{ANCHOR}.csv", run_dir / "anchor_trace.csv"):
+        if p.exists():
+            return p
+    raise FileNotFoundError(f"no anchor trace in {run_dir}")
 
 
 def main(argv=None) -> int:
@@ -174,6 +264,8 @@ def main(argv=None) -> int:
     s.add_argument("--pairs", type=int, default=0)
     s.add_argument("--delta-qp", type=int, default=-2)
     s.add_argument("--seed", type=int, default=0)
+    s.add_argument("--require-residual", action="store_true",
+                   help="sensitivity option: only CTUs with a coded luma residual in the anchor")
     s.add_argument("--out", required=True)
     r = sub.add_parser("run")
     r.add_argument("--candidates", required=True)
@@ -192,6 +284,9 @@ def main(argv=None) -> int:
     c.add_argument("--structure", default="ldp")
     c.add_argument("--qp", type=int, required=True)
     c.add_argument("--out", required=True)
+    c.add_argument("--width", type=int, help="default: from the anchor manifest")
+    c.add_argument("--height", type=int)
+    c.add_argument("--ctu", type=int, default=128)
     a = ap.parse_args(argv)
 
     if a.cmd == "sample":
@@ -200,9 +295,10 @@ def main(argv=None) -> int:
         pic = Picture(a.width, a.height, a.ctu)
         trace = load_trace(a.trace)
         nodes = candidate_table(trace, pd.read_csv(a.boxes), pic)
-        singles = sample(nodes, a.n, a.seed, a.delta_qp)
+        singles = sample(nodes, a.n, a.seed, a.delta_qp, a.require_residual)
         singles.to_csv(out / "candidates.csv", index=False)
-        print(f"{len(singles)} interventions from {int(nodes.valid.sum())} valid of {len(nodes)} CTUs")
+        print(f"{len(singles)} interventions ({int(singles.resid_in_anchor.sum())} with anchor residual) "
+              f"from {len(nodes)} CTUs")
         if a.pairs:
             p = sample_pairs(trace, pic, singles, a.pairs, a.seed)
             p.to_csv(out / "pairs.csv", index=False)
@@ -216,21 +312,26 @@ def main(argv=None) -> int:
         if a.anchor_only:
             jobs = jobs[:1]
         enc, dec = find_binary(vtm, "EncoderApp"), find_binary(vtm, "DecoderApp")
-        commit = Path("third_party/VTM_COMMIT")
-        prov = {"vtm_commit": commit.read_text().strip() if commit.exists() else "unknown"}
+        prov = vtm_provenance()
         with ThreadPoolExecutor(max_workers=a.workers) as pool:
             for f in [pool.submit(run_job, j, enc, dec, vtm, out, prov) for j in jobs]:
                 f.result()
         print(f"{len(jobs)} encodes done in {out}")
         return 0
 
-    singles, pairs = collect(Path(a.runs), Path(a.candidates), a.structure, a.qp, a.sequence)
+    pic = Picture(a.width, a.height, a.ctu) if a.width else None
+    singles, pairs = collect(Path(a.runs), Path(a.candidates), a.structure, a.qp, a.sequence, pic)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     singles.to_csv(out / "interventions.csv", index=False)
     if len(pairs):
         pairs.to_csv(out / "pairs_measured.csv", index=False)
-    print(f"collected {len(singles)} interventions, {len(pairs)} pairs")
+    counts = singles["status"].value_counts().to_dict()
+    (out / "realisation.json").write_text(json.dumps({"singles": counts, "pairs": pairs["status"].value_counts()
+                                                      .to_dict() if len(pairs) else {}}, indent=2))
+    print(f"collected {len(singles)} interventions {counts}, {len(pairs)} pairs")
+    if counts.get("unexplained"):
+        print("WARNING: bitstream changed without a trace change in the target CTU; inspect before analysis")
     return 0
 
 

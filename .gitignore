@@ -28,3 +28,9 @@ __pycache__/
 *.y16
 *.f32
 results/hooks/
+# per-job hook inputs/outputs referenced by configs/variants.yaml
+results/b1/dump/
+results/b1/weights/
+results/b1/external/
+results/ramu/trace/
+results/e2e/

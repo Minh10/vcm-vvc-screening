@@ -1,20 +1,47 @@
 # Encoder variants = extra EncoderApp arguments appended after the base cfg (vcm.jobs).
 # Option names verified against VTM-24.0 + vcm-hooks (docs/ALF_CODEC_AUDIT.md).
-# Placeholders in angle brackets are filled per sequence by the experiment drivers.
+#
+# Keys per variant:
+#   args               EncoderApp arguments; placeholders {sequence} {structure} {qp} {variant} {dataset} are filled
+#                      per job. Every file/directory given to --VCMQpOffsetFile / --VCMAlfWeightDir /
+#                      --VCMAlfExternalFile must exist before encoding (checked, and hashed into the job fingerprint).
+#   branch             A (QP/lambda), B (ALF) or anchor. vcm.jobs refuses to run A and B variants in one invocation.
+#   structures         restrict to these prediction structures (default: all).
+#   same_bitstream_as  output-only hooks (trace, dump): the bitstream must equal that variant's byte for byte.
 variants:
   # --- Branch B, stage B0: does ALF matter for the task at all? ---
   alf_default:
     args: []
   alf_off:
+    branch: B
     args: ["--ALF=0", "--CCALF=0"]
-  # --- Branch B, O1-B: task-weighted Wiener inside VTM's own ALF encoder ---
-  # alf_weighted:   {args: ["--VCMAlfWeightDir=<weights_dir>"]}
+  # --- Branch B: anchor with ALF dump (input of `vcm.alf.experiments wiener|oracle`) ---
+  alf_default_dump:
+    args: ["--VCMAlfDumpDir=results/b1/dump/{sequence}__{structure}__qp{qp}"]
+    same_bitstream_as: alf_default
+  # --- Branch B, O1-B: task-weighted statistics inside VTM's own ALF encoder ---
+  #     weight maps: python -m vcm.alf.experiments weights ... --out results/b1/weights/{sequence}__{structure}
+  alf_weighted:
+    branch: B
+    args: ["--VCMAlfWeightDir=results/b1/weights/{sequence}__{structure}"]
   # --- Branch B, O1-A': externally designed coefficients, forced in every CTB of the listed pictures ---
-  # alf_external:   {args: ["--VCMAlfExternalFile=<coeff_file>"]}
+  #     coefficient file: python -m vcm.alf.experiments oracle|wiener ... --out results/b1/external/<job>.txt
+  alf_external:
+    branch: B
+    args: ["--VCMAlfExternalFile=results/b1/external/{sequence}__{structure}__qp{qp}.txt"]
   # --- Branch A: DQP-enabled anchor (header-only intervention file) and the task-agnostic VTM baselines ---
   dqp_anchor:
+    branch: A
     args: ["--VCMQpOffsetFile=configs/empty_qp_offsets.csv"]
+  dqp_anchor_trace:
+    branch: A
+    args: ["--VCMQpOffsetFile=configs/empty_qp_offsets.csv",
+           "--VCMTraceFile=results/ramu/trace/{sequence}__{structure}__qp{qp}.csv"]
+    same_bitstream_as: dqp_anchor
   vtm_dpf:
+    branch: A
     args: ["--DPF=1"]            # distortion-propagation CTU lambda/QP adaptation already in VTM-24.0
   vtm_bim:
+    branch: A
+    structures: [ldp, ra]        # VTM: "Block Importance Mapping only support Temporal sub-sample ratio 1"
     args: ["--BIM=1"]            # block importance mapping (MCTF-based propagation) already in VTM-24.0
