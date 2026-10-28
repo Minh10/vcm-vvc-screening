@@ -1,0 +1,24 @@
+# VTM is fetched by scripts/fetch_vtm.sh, never committed
+third_party/VTM/
+third_party/VTM_BUILD_INFO
+
+# Large media and codec outputs
+*.yuv
+*.y4m
+*.bin
+*.266
+*.vvc
+results/**/raw/
+results/p0/smoke_*/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.egg-info/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,56 @@
+# Shared settings for both screening branches.
+# Fields marked TODO must be filled during P0 (docs/P0_REPRODUCIBILITY.md) and then frozen.
+
+codec:
+  name: VTM
+  tag: VTM-24.0
+  repo: https://vcgit.hhi.fraunhofer.de/jvet/VVCSoftware_VTM.git
+  commit: TODO            # written by scripts/fetch_vtm.sh to third_party/VTM_COMMIT
+  configs:
+    ai:  cfg/encoder_intra_vtm.cfg
+    ldp: cfg/encoder_lowdelay_P_vtm.cfg
+    ra:  cfg/encoder_randomaccess_vtm.cfg   # later stage only
+  rate_control: false
+
+ctc:
+  name: MPEG-AI Part 2 (VCM) Common Test Conditions
+  version: TODO           # pin the exact document number
+  qps: []                 # TODO: copy from CTC
+  frames_per_sequence: TODO
+
+datasets:
+  sfu_hw_objects_v1:
+    task: object_detection
+    sequences:
+      tune: []            # TODO: fixed before any result is inspected
+      report: []
+  tvd:
+    task: object_tracking
+    sequences:
+      tune: []
+      report: []
+
+detector:
+  name: TODO              # per CTC, e.g. Faster R-CNN X101-FPN
+  framework: TODO
+  checkpoint_sha256: TODO
+  score_threshold: TODO
+  optimisation_target: pseudo_labels_from_original_frames   # never test-set ground truth
+
+evaluation:
+  bitrate: actual_bitstream_bits
+  bd_rate: common_monotone_interval
+  statistical_unit: sequence
+  bootstrap_resamples: 10000
+  ci_level: 0.95
+  multiple_comparison: holm
+
+branches:
+  ramu_lite:
+    configs: [ldp, ai]
+    action_delta_qp: -2
+    anchor: dqp_enabled_delta_zero
+  maps_alf:
+    configs: [ai, ldp]
+    controls: [alf_off, alf_default, alf_weighted_wiener]
+    stages: [B0, O1-A, O1-A-prime, O1-B]
