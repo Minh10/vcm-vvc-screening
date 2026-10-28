@@ -1,0 +1,20 @@
+# Encoder variants = extra EncoderApp arguments appended after the base cfg (vcm.jobs).
+# Option names verified against VTM-24.0 + vcm-hooks (docs/ALF_CODEC_AUDIT.md).
+# Placeholders in angle brackets are filled per sequence by the experiment drivers.
+variants:
+  # --- Branch B, stage B0: does ALF matter for the task at all? ---
+  alf_default:
+    args: []
+  alf_off:
+    args: ["--ALF=0", "--CCALF=0"]
+  # --- Branch B, O1-B: task-weighted Wiener inside VTM's own ALF encoder ---
+  # alf_weighted:   {args: ["--VCMAlfWeightDir=<weights_dir>"]}
+  # --- Branch B, O1-A': externally designed coefficients, forced in every CTB of the listed pictures ---
+  # alf_external:   {args: ["--VCMAlfExternalFile=<coeff_file>"]}
+  # --- Branch A: DQP-enabled anchor (header-only intervention file) and the task-agnostic VTM baselines ---
+  dqp_anchor:
+    args: ["--VCMQpOffsetFile=configs/empty_qp_offsets.csv"]
+  vtm_dpf:
+    args: ["--DPF=1"]            # distortion-propagation CTU lambda/QP adaptation already in VTM-24.0
+  vtm_bim:
+    args: ["--BIM=1"]            # block importance mapping (MCTF-based propagation) already in VTM-24.0

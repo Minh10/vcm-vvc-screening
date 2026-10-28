@@ -27,11 +27,18 @@ poc,ctu_addr,delta_qp
 12,18,-2
 ```
 
-## Log bắt buộc cho mỗi CTU/CU được can thiệp
+## Trace và log
 
-run_id, sequence, coding_order, POC, CTU address, CTU x/y, CU/QG geometry, base QP, requested ΔQP,
-effective QP, effective λ, predMode, skip/merge, split, reference list/index/POC, MV, residual energy,
-RD cost đã chọn, hash ảnh tái tạo, tổng bit bitstream.
+Hook `--VCMTraceFile` ghi mỗi CU luma cuối cùng một dòng:
+`poc,coding_order,temporal_id,x,y,w,h,qp,mode,ref_poc0,mv0x,mv0y,ref_poc1,mv1x,mv1y,resid_energy`
+(MV theo mẫu luma; `mode` ∈ intra/inter/skip; `resid_energy` = tổng |hệ số| luma). QP hiệu dụng trong trace dùng
+để kiểm tra can thiệp có thật sự áp dụng. Manifest mỗi lần chạy (`vcm.jobs`) ghi lệnh, commit VTM, bit, hash
+bitstream và MD5 ảnh giải mã. λ hiệu dụng và RD cost chưa được ghi (không cần cho cổng A1).
+
+## Tính hợp lệ của can thiệp
+
+`cu_qp_delta` chỉ được gửi khi CU có phần dư. CTU không có phần dư trong lượt anchor bị loại khỏi tập ứng viên
+(`runner sample`). Báo cáo tỉ lệ CTU hợp lệ theo chuỗi và QP.
 
 ## Thiết kế thí nghiệm
 
@@ -49,10 +56,12 @@ RD cost đã chọn, hash ảnh tái tạo, tổng bit bitstream.
 | B0 | Ngẫu nhiên |
 | B1 | Chỉ độ quan trọng cục bộ/ROI |
 | B2 | Lớp thời gian + fan-out tham chiếu |
-| B3 | B1 + thống kê thời gian (baseline mạnh không dùng đồ thị) |
-| B4 | B3 + đặc trưng đồ thị tham chiếu thật |
-| B5 | B4 với cạnh đồ thị bị xáo trộn |
-| B6 | Điểm lan truyền méo không phụ thuộc nhiệm vụ |
+| B3 | B1 + B2 + thống kê codec cục bộ + lan truyền nhiều bước **không phụ thuộc nhiệm vụ** (`infl`, `depth`) |
+| B4 | B3 + đặc trưng đồ thị có trọng số độ quan trọng (`fanout_imp1`, `infl_imp`) |
+| B5 | B3 + các đặc trưng của B4 tính trên đồ thị xáo trộn (giữ fan-out nguồn) |
+| B6 | Chỉ điểm lan truyền không phụ thuộc nhiệm vụ (`infl`) |
+
+Ở cổng A2 (mã hoá thật), đối chứng không phụ thuộc nhiệm vụ là **VTM `--DPF=1` và `--BIM=1`**, có sẵn trong VTM-24.0.
 
 B3, B4, B5 dùng cùng họ mô hình, cùng số tham số, cùng ngân sách tinh chỉnh (ridge, gradient-boosted trees hoặc MLP nhỏ).
 

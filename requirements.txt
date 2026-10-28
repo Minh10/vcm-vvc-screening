@@ -1,3 +1,12 @@
 numpy>=1.24
 scipy>=1.10
+pandas>=2.0
+scikit-learn>=1.3
+pyyaml>=6.0
+pycocotools>=2.0.7
 pytest>=7
+# optional: O1-A oracle, Hutchinson weights, torchvision detectors
+# torch>=2.1
+# torchvision>=0.16
+# optional: the VCM CTC detector
+# detectron2 (install from source)

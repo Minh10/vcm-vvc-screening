@@ -4,8 +4,10 @@
 codec:
   name: VTM
   tag: VTM-24.0
-  repo: https://vcgit.hhi.fraunhofer.de/jvet/VVCSoftware_VTM.git
-  commit: TODO            # written by scripts/fetch_vtm.sh to third_party/VTM_COMMIT
+  base_commit: ca331de230f27e0489df9d2fa6c006e2dcd2ed89     # official VTM-24.0
+  repo: https://github.com/Minh10/vvcsoftware_vtm.git          # import of the JVET repository
+  branch: vcm-hooks                                            # VTM-24.0 + encoder-side hooks (VCM_HOOKS.md)
+  commit: see third_party/VTM_COMMIT                           # written by scripts/fetch_vtm.sh
   configs:
     ai:  cfg/encoder_intra_vtm.cfg
     ldp: cfg/encoder_lowdelay_P_vtm.cfg
@@ -30,12 +32,16 @@ datasets:
       tune: []
       report: []
 
-detector:
-  name: TODO              # per CTC, e.g. Faster R-CNN X101-FPN
-  framework: TODO
+detector:                 # read by vcm.detect.build (keys below) — fill from the CTC document in P0
+  kind: detectron2        # detectron2 | torchvision
+  config_file: TODO       # detectron2: model config (e.g. Faster R-CNN X101-FPN of the CTC)
+  weights: TODO           # local checkpoint path (no download at evaluation time)
   checkpoint_sha256: TODO
-  score_threshold: TODO
-  optimisation_target: pseudo_labels_from_original_frames   # never test-set ground truth
+  score_threshold: 0.05
+  pseudo_label_threshold: 0.5   # detections on ORIGINAL frames used as pseudo-labels (never test-set GT)
+  matrix: bt709           # YUV -> RGB conversion; must match the CTC evaluation script
+  full_range: false
+  device: cpu
 
 evaluation:
   bitrate: actual_bitstream_bits
@@ -50,7 +56,9 @@ branches:
     configs: [ldp, ai]
     action_delta_qp: -2
     anchor: dqp_enabled_delta_zero
+    a2_baselines: [dqp_anchor, vtm_dpf, vtm_bim, local_importance_qp]
+    confirmatory_sequences: 16      # simulation: 12 sequences gave only ~73% power at a moderate effect
   maps_alf:
     configs: [ai, ldp]
-    controls: [alf_off, alf_default, alf_weighted_wiener]
-    stages: [B0, O1-A, O1-A-prime, O1-B]
+    controls: [alf_off, alf_default]
+    stages: [B0, O1-A, O1-A-prime, O1-B, O1-B-forced]

@@ -1,0 +1,14 @@
+# Input of `python -m vcm.ramu.analysis` (gate A1). One entry per REPORT sequence (16-20 recommended).
+rho: 0.5            # per-hop attenuation of the graph features (fixed modelling constant, not tuned on report data)
+model: gbr          # gbr | ridge — same family and hyper-parameters for B1..B6
+topk_frac: 0.1
+seed: 0
+sequences:
+  - name: TODO_seq
+    width: 832
+    height: 480
+    ctu: 128
+    trace: results/ramu/TODO_seq/runs/anchor_trace.csv
+    boxes: results/ramu/TODO_seq/boxes.csv                    # poc,x0,y0,x1,y1,score on original frames
+    interventions: results/ramu/TODO_seq/cand/interventions.csv
+    pairs: results/ramu/TODO_seq/cand/pairs_measured.csv      # optional

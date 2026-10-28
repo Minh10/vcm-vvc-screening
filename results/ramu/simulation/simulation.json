@@ -1,0 +1,14 @@
+[
+  {
+    "scenario": "signal",
+    "runs": 15,
+    "go_rate": 0.7333333333333333,
+    "median_rho_gain_B4_B3": 0.05639943741209552
+  },
+  {
+    "scenario": "null",
+    "runs": 15,
+    "go_rate": 0.0,
+    "median_rho_gain_B4_B3": -0.002719174871073593
+  }
+]

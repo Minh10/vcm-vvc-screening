@@ -1,4 +1,5 @@
 # VTM is fetched by scripts/fetch_vtm.sh, never committed
+third_party/VTM
 third_party/VTM/
 third_party/VTM_BUILD_INFO
 
@@ -22,3 +23,8 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
+
+# hook dumps / weight maps / per-run raw outputs
+*.y16
+*.f32
+results/hooks/

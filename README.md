@@ -1,56 +1,63 @@
 # vcm-vvc-screening
 
 Thí nghiệm sàng lọc cho luận án *Nghiên cứu cải tiến hiệu năng mã hoá video cho các ứng dụng thị giác máy*.
-Mục tiêu: quyết định dựa trên bằng chứng xem hướng nào khai thác được bộ mã chuẩn VVC cho thị giác máy,
-**trước khi** chọn trục chính của luận án.
+Mục tiêu: quyết định dựa trên bằng chứng hướng nào khai thác được bộ mã chuẩn VVC cho thị giác máy, **trước khi**
+chọn trục chính của luận án. Mọi thí nghiệm giữ bitstream VVC hợp chuẩn và **không sửa bộ giải mã**.
 
-Mọi thí nghiệm giữ bitstream VVC hợp chuẩn và **không sửa bộ giải mã**.
+## Trạng thái (2026-10-28)
+
+| Hạng mục | Trạng thái |
+| --- | --- |
+| Bộ mã VTM-24.0 + hook sàng lọc ([`Minh10/vvcsoftware_vtm`](https://github.com/Minh10/vvcsoftware_vtm), nhánh `vcm-hooks`) | Xong; tắt hook = trùng byte VTM gốc (AI, LDP) |
+| ALF offline (`tools/vcm/alf`) | Xong; **bit-exact** với đầu ra ALF của VTM |
+| Driver nhánh A và B, đánh giá, thống kê | Xong; 74 test tự động |
+| Kiểm toán ALF ([docs/ALF_CODEC_AUDIT.md](docs/ALF_CODEC_AUDIT.md)) | Xong |
+| P0 trên máy chủ nhóm, dữ liệu CTC, detector CTC | **Chưa** — cần dữ liệu và tài nguyên của nhóm ([RUNBOOK](docs/RUNBOOK.md)) |
+| Kết quả Go/No-Go của hai nhánh | **Chưa có** |
+
+Mọi con số hiện có đến từ clip tổng hợp hoặc mô phỏng và chỉ dùng để kiểm chứng công cụ; chúng không phải kết quả
+nghiên cứu.
 
 ## Hai giả thuyết đang được kiểm chứng song song
 
 | Nhánh | Tầng codec | Câu hỏi | Điều kiện đi tiếp |
 | --- | --- | --- | --- |
-| **A — RAMU-Lite** | Phân bổ bit (QP theo CTU/QG) | Đồ thị tham chiếu của VTM có dự đoán tác động nhiệm vụ của một can thiệp ΔQP tốt hơn thông tin ROI + thời gian thông thường không, và điều đó có thành lợi ích rate–task không? | B4 > B3 và B4 > B5 (đồ thị xáo trộn) trên chuỗi chưa thấy; sau đó cải thiện đường rate–task |
-| **B — MAPS-ALF** | Bộ lọc trong vòng lặp (ALF APS) | Thiết kế lại hệ số và lựa chọn ALF theo méo nhiệm vụ máy có cải thiện rate–task so với ALF mặc định, ở bitrate thực, với bộ giải mã chuẩn không? | Cải thiện nhất quán so với ALF mặc định, vượt biến thiên giữa các chuỗi |
+| **A — RAMU-Lite** | Phân bổ bit (QP theo CTU) | Cấu trúc tham chiếu *có điều kiện theo nhiệm vụ* có dự đoán tác động của một can thiệp ΔQP tốt hơn baseline mạnh (gồm cả lan truyền không phụ thuộc nhiệm vụ) không, và có vượt `--DPF`/`--BIM` sẵn có của VTM về rate–task không? | Cổng A1 rồi A2 |
+| **B — MAPS-ALF** | Bộ lọc trong vòng lặp (ALF APS) | Thiết kế ALF theo méo nhiệm vụ có cải thiện rate–task so với ALF mặc định, ở bitrate thật, sau decoder chuẩn không? | Cổng B-0 (O1-A) rồi B-1 (O1-B) |
 
-Hai nhánh **không được ghép** cho tới khi mỗi nhánh tự qua cổng của mình. Chi tiết: [docs/RESEARCH_PLAN.md](docs/RESEARCH_PLAN.md).
-
-Ngoài phạm vi giai đoạn này: scaling list, LMCS, hậu xử lý/NNPF, tích hợp VCM-RS, Gauss–Newton sketch.
-Lý do ghi ở [docs/DECISIONS.md](docs/DECISIONS.md).
-
-## Thứ tự công việc
-
-1. **P0 — Tái lập được** ([docs/P0_REPRODUCIBILITY.md](docs/P0_REPRODUCIBILITY.md)): ghim VTM-24.0, build, anchor, kiểm tra tính tất định, smoke test bộ giải mã chuẩn. Chưa xong P0 thì chưa chạy thí nghiệm nào.
-2. **Kiểm toán ALF** ([docs/ALF_CODEC_AUDIT_SPEC.md](docs/ALF_CODEC_AUDIT_SPEC.md)): viết `ALF_CODEC_AUDIT.md` trước khi sửa bất kỳ dòng nào trong ALF của VTM.
-3. **Đặc tả can thiệp QP** cho RAMU-Lite ([docs/RAMU_LITE_SPEC.md](docs/RAMU_LITE_SPEC.md)).
-4. Sàng lọc hai nhánh (2–3 tuần, tuỳ thời gian chạy VTM).
+Chi tiết: [docs/RESEARCH_PLAN.md](docs/RESEARCH_PLAN.md). Các phát hiện đã làm thay đổi thiết kế:
+[docs/DECISIONS.md](docs/DECISIONS.md). Ngoài phạm vi giai đoạn này: scaling list, LMCS, hậu xử lý/NNPF,
+tích hợp VCM-RS, Gauss–Newton sketch.
 
 ## Cấu trúc
 
 ```
-configs/            cấu hình thí nghiệm dùng chung cho cả hai nhánh
-docs/               kế hoạch, đặc tả, nhật ký quyết định, tiền lệ
-scripts/            tải, build VTM; smoke test
-tools/vcm/          công cụ Python: BD-rate, thống kê theo chuỗi, đọc file can thiệp
-tests/              kiểm thử cho tools/vcm
-third_party/        VTM được tải vào đây (không commit)
-results/            kết quả; dữ liệu thô không commit
+configs/            cấu hình thí nghiệm, biến thể bộ mã, mẫu bảng chuỗi và đầu vào phân tích
+docs/               kế hoạch, runbook, kiểm toán ALF, đặc tả RAMU-Lite, nhật ký quyết định, tiền lệ
+scripts/            tải/build VTM, smoke test
+tools/vcm/          jobs (mã hoá hàng loạt + manifest), evaluate (mAP, nhãn giả), curves (BD theo chuỗi),
+                    stats (kiểm định theo chuỗi), bd_rate, yuv, detect
+tools/vcm/ramu/     nhánh A: đồ thị tham chiếu, đặc trưng B1–B6, cổng A1, mô phỏng, runner can thiệp
+tools/vcm/alf/      nhánh B: ALF chuẩn VVC (bit-exact), Wiener có trọng số, chiếu hệ số, oracle O1-A, driver
+tests/              74 test
+third_party/        VTM (không commit), VTM_COMMIT
+results/            kết quả tổng hợp (dữ liệu thô không commit)
 ```
 
 ## Bắt đầu
 
 ```bash
 pip install -r requirements.txt
-pytest -q                      # kiểm tra công cụ đánh giá
-scripts/fetch_vtm.sh           # tải VTM-24.0, ghi lại commit
-scripts/build_vtm.sh           # build Release
-scripts/smoke_test.sh          # mã hoá vài khung, giải mã bằng decoder chuẩn, so MD5
+pytest -q
+scripts/fetch_vtm.sh && scripts/build_vtm.sh && scripts/smoke_test.sh ldp
 ```
 
-## Quy tắc đánh giá (áp dụng cho mọi nhánh)
+Sau đó làm theo [docs/RUNBOOK.md](docs/RUNBOOK.md).
+
+## Quy tắc đánh giá (mọi nhánh)
 
 - Đơn vị thống kê là **chuỗi video**, không phải CTU hay khung.
-- BD-rate tính trên **đoạn đơn điệu chung**; luôn kèm đường cong gốc.
-- Anchor phải bật cùng công cụ báo hiệu với phương pháp (ví dụ `cu_qp_delta` với ΔQP = 0).
-- Tham số chỉnh được chọn trên chuỗi tách riêng khỏi chuỗi báo cáo; không dùng nhãn tập thử để tối ưu.
-- Mọi bitstream giải mã bằng bộ giải mã tham chiếu không sửa; so MD5 ảnh tái tạo giữa bộ mã và bộ giải mã.
+- BD-rate trên **đoạn đơn điệu chung**, luôn kèm đường cong gốc.
+- Anchor bật cùng công cụ báo hiệu với phương pháp (ví dụ DQP với ΔQP = 0: biến thể `dqp_anchor`).
+- Tham số chỉnh được chọn trên chuỗi `tune`; tối ưu dùng nhãn giả từ khung gốc, không dùng nhãn thật của tập thử.
+- Mọi bitstream giải mã bằng `DecoderApp` không sửa; MD5 ảnh tái tạo của bộ mã và bộ giải mã phải khớp.

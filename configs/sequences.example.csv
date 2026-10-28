@@ -1,0 +1,3 @@
+name,path,width,height,fps,frames,bitdepth,split,dataset,annotations
+TODO_classC_seq1,/data/sfu/TODO.yuv,832,480,50,TODO,8,tune,sfu_hw_objects_v1,/data/sfu/annotations/TODO.json
+TODO_classC_seq2,/data/sfu/TODO.yuv,832,480,50,TODO,8,report,sfu_hw_objects_v1,/data/sfu/annotations/TODO.json
