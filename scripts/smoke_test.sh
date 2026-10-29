@@ -9,7 +9,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="$ROOT/third_party/VTM"
+SRC="${VTM_SRC:-$ROOT/third_party/VTM}"
 CFG_NAME="${1:-ldp}"
 case "$CFG_NAME" in
   ai)  CFG="$SRC/cfg/encoder_intra_vtm.cfg" ;;
@@ -22,7 +22,7 @@ find_bin() { find "$SRC/bin" -type f -name "$1*" -perm -u+x 2>/dev/null | head -
 ENC="$(find_bin EncoderApp)"; DEC="$(find_bin DecoderApp)"
 [[ -x "$ENC" && -x "$DEC" ]] || { echo "Build VTM first (scripts/build_vtm.sh)" >&2; exit 1; }
 
-OUT="$ROOT/results/p0/smoke_${CFG_NAME}"
+OUT="${SMOKE_OUT:-$ROOT/results/p0/smoke_${CFG_NAME}}"
 mkdir -p "$OUT"
 
 if [[ $# -ge 5 ]]; then

@@ -105,20 +105,21 @@ index 899cb65..6c51981 100644
    int         m_targetOlsIdx;
    bool        m_OPIEnabled;                                     ///< enable Operating Point Information (OPI)
 diff --git a/source/Lib/EncoderLib/EncAdaptiveLoopFilter.cpp b/source/Lib/EncoderLib/EncAdaptiveLoopFilter.cpp
-index 8bbbcb4..1423fb3 100644
+index 8bbbcb4..c7a09be 100644
 --- a/source/Lib/EncoderLib/EncAdaptiveLoopFilter.cpp
 +++ b/source/Lib/EncoderLib/EncAdaptiveLoopFilter.cpp
-@@ -42,6 +42,9 @@
+@@ -42,6 +42,10 @@
  #define AlfCtx(c) SubCtx( Ctx::Alf, c)
  
  #include <algorithm>
++#include <cmath>
 +#include <cstdint>
 +#include <fstream>
 +#include <sstream>
  
  #if MAX_NUM_CC_ALF_FILTERS>1
  struct FilterIdxCount
-@@ -927,6 +930,8 @@ void EncAdaptiveLoopFilter::ALFProcess(CodingStructure& cs, const double *lambda
+@@ -927,6 +931,8 @@ void EncAdaptiveLoopFilter::ALFProcess(CodingStructure& cs, const double *lambda
    PelUnitBuf recYuv = m_tempBuf.getBuf( cs.area );
    recYuv.extendBorderPel( MAX_ALF_FILTER_LENGTH >> 1 );
  
@@ -127,7 +128,7 @@ index 8bbbcb4..1423fb3 100644
    // derive classification
    const CPelBuf& recLuma = recYuv.get( COMPONENT_Y );
    const PreCalcValues& pcv = *cs.pcv;
-@@ -1013,6 +1018,8 @@ void EncAdaptiveLoopFilter::ALFProcess(CodingStructure& cs, const double *lambda
+@@ -1013,6 +1019,8 @@ void EncAdaptiveLoopFilter::ALFProcess(CodingStructure& cs, const double *lambda
              lambdaChromaWeight
  #endif
    );
@@ -136,7 +137,7 @@ index 8bbbcb4..1423fb3 100644
  
    // derive filter (chroma)
    if (!(m_encCfg->getMaxNumALFAPS() == 0) && isChromaEnabled(cs.pcv->chrFormat)) // Find ALF parameters for chroma if ALF APS is enabled
-@@ -1051,6 +1058,11 @@ void EncAdaptiveLoopFilter::ALFProcess(CodingStructure& cs, const double *lambda
+@@ -1051,6 +1059,11 @@ void EncAdaptiveLoopFilter::ALFProcess(CodingStructure& cs, const double *lambda
  
    alfReconstructor(cs, recYuv);
  
@@ -148,7 +149,7 @@ index 8bbbcb4..1423fb3 100644
    // Do not transmit CC ALF if it is unchanged
    if (cs.slice->getAlfEnabledFlag(COMPONENT_Y))
    {
-@@ -2354,7 +2366,12 @@ void EncAdaptiveLoopFilter::getBlkStats(AlfCovariance *alfCovariance, const AlfF
+@@ -2354,7 +2367,12 @@ void EncAdaptiveLoopFilter::getBlkStats(AlfCovariance *alfCovariance, const AlfF
        const ComponentID compID  = isLuma(channel) ? COMPONENT_Y : COMPONENT_Cb;
        const Pel        *lumaPtr = orgLuma + (i << ::getComponentScaleY(compID, m_chromaFormat)) * orgLumaStride
                             + (j << ::getComponentScaleX(compID, m_chromaFormat));
@@ -162,7 +163,7 @@ index 8bbbcb4..1423fb3 100644
        const double yLocal = org[j] - rec[j];
  
        double e[MAX_ALF_NUM_CLIP_VALS][MAX_NUM_ALF_LUMA_COEFF];
-@@ -2675,6 +2692,10 @@ void  EncAdaptiveLoopFilter::alfEncoderCtb(CodingStructure& cs, AlfParam& alfPar
+@@ -2675,6 +2693,10 @@ void  EncAdaptiveLoopFilter::alfEncoderCtb(CodingStructure& cs, AlfParam& alfPar
      {
        continue;
      }
@@ -173,7 +174,7 @@ index 8bbbcb4..1423fb3 100644
  
      int bitsNewFilter = 0;
      if (useNewFilter)
-@@ -2685,6 +2706,10 @@ void  EncAdaptiveLoopFilter::alfEncoderCtb(CodingStructure& cs, AlfParam& alfPar
+@@ -2685,6 +2707,10 @@ void  EncAdaptiveLoopFilter::alfEncoderCtb(CodingStructure& cs, AlfParam& alfPar
  
      for (int numTemporalAps = 0; numTemporalAps <= apsIds.size(); numTemporalAps++)
      {
@@ -184,7 +185,7 @@ index 8bbbcb4..1423fb3 100644
        const int numApss = numTemporalAps + (useNewFilter ? 1 : 0);
  
        if (m_encCfg->getMaxNumALFAPS() == 0 && numApss > 0)
-@@ -2707,7 +2732,7 @@ void  EncAdaptiveLoopFilter::alfEncoderCtb(CodingStructure& cs, AlfParam& alfPar
+@@ -2707,7 +2733,7 @@ void  EncAdaptiveLoopFilter::alfEncoderCtb(CodingStructure& cs, AlfParam& alfPar
          continue;
        }
  
@@ -193,7 +194,7 @@ index 8bbbcb4..1423fb3 100644
  
        for (int iter = 0; iter < numIter; iter++)
        {
-@@ -2797,6 +2822,12 @@ void  EncAdaptiveLoopFilter::alfEncoderCtb(CodingStructure& cs, AlfParam& alfPar
+@@ -2797,6 +2823,12 @@ void  EncAdaptiveLoopFilter::alfEncoderCtb(CodingStructure& cs, AlfParam& alfPar
          m_CABACEstimator->getCtx() = ctxStart;
          for (int ctbIdx = 0; ctbIdx < m_numCTUsInPic; ctbIdx++)
          {
@@ -206,7 +207,7 @@ index 8bbbcb4..1423fb3 100644
            double distUnfilterCtb = m_ctbDistortionUnfilter[COMPONENT_Y][ctbIdx];
            // ctb on
            double         costOn = MAX_DOUBLE;
-@@ -2909,7 +2940,7 @@ void  EncAdaptiveLoopFilter::alfEncoderCtb(CodingStructure& cs, AlfParam& alfPar
+@@ -2909,7 +2941,7 @@ void  EncAdaptiveLoopFilter::alfEncoderCtb(CodingStructure& cs, AlfParam& alfPar
    cs.slice->setCcAlfCbApsId(newApsId);
    cs.slice->setCcAlfCrApsId(newApsId);
  
@@ -215,7 +216,7 @@ index 8bbbcb4..1423fb3 100644
    {
      cs.slice->resetAlfEnabledFlag();
      cs.slice->setNumAlfApsIdsLuma(0);
-@@ -4337,3 +4368,156 @@ void EncAdaptiveLoopFilter::countChromaSampleValueNearMidPoint(const Pel *chroma
+@@ -4337,3 +4369,158 @@ void EncAdaptiveLoopFilter::countChromaSampleValueNearMidPoint(const Pel *chroma
      chroma += (chromaStride << log2BlockHeight);
    }
  }
@@ -240,9 +241,11 @@ index 8bbbcb4..1423fb3 100644
 +  f.read(reinterpret_cast<char *>(m_vcmWeight.data()), (std::streamsize) (m_vcmWeight.size() * sizeof(float)));
 +  CHECK(f.gcount() != (std::streamsize) (m_vcmWeight.size() * sizeof(float)),
 +        "VCMAlfWeightDir: weight map has the wrong size (expected luma width x height float32): " + path);
++  CHECK(f.peek() != std::char_traits<char>::eof(),
++        "VCMAlfWeightDir: weight map is larger than luma width x height float32: " + path);
 +  for (const float w: m_vcmWeight)
 +  {
-+    CHECK(!(w >= 0.0f), "VCMAlfWeightDir: weights must be finite and non-negative: " + path);
++    CHECK(!(std::isfinite(w) && w >= 0.0f), "VCMAlfWeightDir: weights must be finite and non-negative: " + path);
 +  }
 +}
 +

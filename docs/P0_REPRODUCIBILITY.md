@@ -7,7 +7,8 @@ Không thí nghiệm nào chạy trước khi mọi mục dưới đây được
 Các mục đánh dấu ✔ đã qua trong môi trường phát triển (2026-10-28, gcc 13.3, Xeon 2,8 GHz, clip tổng hợp
 416×240); phải chạy lại trên máy chủ nhóm và ghi vào `results/p0/manifest.json`.
 
-- [ ] Tải VTM bằng `scripts/fetch_vtm.sh`; ghi commit, tree và hash bản vá vào `third_party/VTM_COMMIT`, `VTM_PROVENANCE`; cây mã khớp VTM-24.0 + `vcm-hooks.patch`. ✔ dev: `9d0aceb`, tree `8dd3ddef…`.
+- [ ] `scripts/preflight.sh <nhánh>` qua (`"pass": true`) trên máy chủ.
+- [ ] Tải VTM bằng `scripts/fetch_vtm.sh`; ghi commit, tree và hash bản vá vào `third_party/VTM_COMMIT`, `VTM_PROVENANCE`; cây mã khớp VTM-24.0 + `vcm-hooks.patch`. ✔ dev: `f1b3119`, tree `0a28da51…`; đường bản vá cho cùng tree.
 - [ ] Build Release bằng `scripts/build_vtm.sh`; ghi phiên bản compiler, cờ build, CPU. ✔ dev.
 - [ ] `scripts/smoke_test.sh` qua: bitstream giải mã được bằng `DecoderApp` không sửa, MD5 ảnh tái tạo của bộ mã khớp bộ giải mã. ✔ dev (LDP).
 - [ ] Tính tất định: mã hoá cùng đầu vào hai lần, bitstream trùng từng byte (ghi SHA-256). ✔ dev.

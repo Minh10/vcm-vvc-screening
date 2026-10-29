@@ -151,3 +151,49 @@ def test_old_traces_load_with_unknown_coverage(tmp_path):
     pd.DataFrame([dict(zip(TRACE_COLUMNS, [0, 0, 0, 0, 0, 8, 8, 32, "intra", -1, 0, 0, -1, 0, 0, 1]))]).to_csv(p, index=False)
     t = load_trace(p)
     assert not coverage(t)["known"]
+
+
+def _write_sequence(tmp_path, name, rng):
+    import pandas as pd
+    rows = []
+    for poc in range(6):
+        for addr in range(8):
+            x, y = (addr % 4) * 64, (addr // 4) * 64
+            rows.append(dict(poc=poc, coding_order=poc, temporal_id=poc % 2, x=x, y=y, w=64, h=64, qp=32,
+                             mode="intra" if poc == 0 else "inter", ref_poc0=-1 if poc == 0 else poc - 1,
+                             mv0x=float(rng.integers(-64, 65)), mv0y=0.0, ref_poc1=-1, mv1x=0.0, mv1y=0.0,
+                             resid_energy=float(rng.integers(0, 50)), flags="", mv_spread=0.0, ref_mixed=0))
+    pd.DataFrame(rows).to_csv(tmp_path / f"{name}_trace.csv", index=False)
+    pd.DataFrame({"poc": range(6), "x0": 0, "y0": 0, "x1": 120, "y1": 64, "score": 0.9}) \
+        .to_csv(tmp_path / f"{name}_boxes.csv", index=False)
+    iv = pd.DataFrame([(p, a) for p in range(5) for a in range(8)], columns=["poc", "ctu_addr"])
+    iv["delta_qp"] = -2
+    iv["realised"] = rng.random(len(iv)) < 0.6
+    iv["status"] = np.where(iv["realised"], "effective", "not_realised")
+    iv.loc[0, "status"] = "unexplained" if name == "s0" else iv.loc[0, "status"]
+    iv["delta_loss"] = np.where(iv["realised"] | (iv["status"] == "unexplained"), rng.normal(0, 1, len(iv)), 0.0)
+    iv["delta_bits"] = np.where(iv["realised"], rng.normal(50, 10, len(iv)), 0.0)
+    iv["resid_in_anchor"] = rng.random(len(iv)) < 0.5
+    iv.to_csv(tmp_path / f"{name}_iv.csv", index=False)
+    return {"name": name, "width": 256, "height": 128, "ctu": 64, "qp": 32,
+            "trace": str(tmp_path / f"{name}_trace.csv"), "boxes": str(tmp_path / f"{name}_boxes.csv"),
+            "interventions": str(tmp_path / f"{name}_iv.csv")}
+
+
+def test_a1_primary_population_is_all_requested(tmp_path):
+    import json
+    import yaml
+    from vcm.ramu import analysis
+    rng = np.random.default_rng(3)
+    spec = {"model": "ridge", "seed": 0, "sequences": [_write_sequence(tmp_path, f"s{i}", rng) for i in range(4)]}
+    (tmp_path / "in.yaml").write_text(yaml.safe_dump(spec))
+    analysis.main(["--inputs", str(tmp_path / "in.yaml"), "--out", str(tmp_path / "a1")])
+    gate = json.loads((tmp_path / "a1" / "gate_a1.json").read_text())
+    assert gate["population"] == "all 160 requested interventions"
+    assert gate["unexplained_interventions"] == 1
+    sec = json.loads((tmp_path / "a1" / "gate_a1_secondary.json").read_text())
+    assert sec["realised"]["valid"] is False and sec["realised"]["n"] < 160
+    diag = (tmp_path / "a1" / "realisation_diagnostics.csv").read_text()
+    for factor in ("sequence", "qp", "temporal_id", "resid_in_anchor", "imp_tercile"):
+        assert factor in diag
+    assert "unexplained interventions" in (tmp_path / "a1" / "report.md").read_text()

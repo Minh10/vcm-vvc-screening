@@ -18,7 +18,8 @@ pytest -q
 [P0_REPRODUCIBILITY.md](P0_REPRODUCIBILITY.md).
 
 `scripts/fetch_vtm.sh` lấy nhánh `vcm-hooks`; nếu kho đó không truy cập được, nó tải VTM-24.0 chính thức và áp
-`third_party/vtm_patch/vcm-hooks.patch`, rồi kiểm cây mã nguồn và ghi `third_party/VTM_COMMIT`, `VTM_PROVENANCE`.
+`third_party/vtm_patch/vcm-hooks.patch`, rồi kiểm tree bằng `third_party/vtm_patch/EXPECTED_TREE` (khác thì dừng) và ghi `third_party/VTM_COMMIT`, `VTM_PROVENANCE`
+(không commit; manifest mỗi job chép lại các giá trị này).
 
 Phần `detector` của `configs/experiment.yaml`, ví dụ với Detectron2 theo CTC:
 
@@ -39,6 +40,10 @@ Không cần GT riêng cho AI. Các driver nhánh B đọc step từ `--anchor-j
 
 **Cache.** Mọi lệnh có thể chạy lại: kết quả chỉ được dùng lại khi fingerprint khớp (xem RESEARCH_PLAN, "Độ tin cậy
 của pipeline"). Thêm `--strict-cache` vào `vcm.jobs` ở lần chạy báo cáo để cache lệch là lỗi thay vì chạy lại.
+
+**Preflight trước P0** (clone sạch, đường bản vá, build, smoke AI/LDP/RA, trùng byte với VTM gốc):
+`scripts/preflight.sh <nhánh>` → `results/p0/preflight_<thời điểm>.json` (`"pass": true`). Ở lần chạy báo cáo đặt
+`VCM_HASH_CACHE=off` để mọi đầu vào được băm lại toàn bộ.
 
 ## 1. Điểm tham chiếu chung
 
@@ -68,11 +73,16 @@ python -m vcm.alf.experiments oracle --dump results/b1/dump/$J --decoded results
 #   so pseudo-variant: vcm.curves ... --test o1a_relaxed_oracle --allow-pseudo (báo cáo mang nhãn chẩn đoán)
 
 # O1-B (bằng chứng quyết định): bản đồ trọng số -> ALF encoder của chính VTM
+# các nhánh trọng số: continuous (chính), binary, shuffled_s0..s4 (5 seed đặt trước), uniform (phải trùng byte alf_default)
 python -m vcm.alf.experiments weights --detections results/original/<seq>/detections.json --gt <annotations.json> \
   --width <W> --height <H> --pocs <coded_frames> --anchor-job results/b0/<seq>__<st>__qp<Q>__alf_default \
   --out results/b1/weights/<seq>__<st>
-python -m vcm.jobs ... --only-variants alf_default alf_weighted alf_external --out results/b1
-#   so với alf_default bằng vcm.curves
+python -m vcm.jobs ... --only-variants alf_default alf_weighted alf_weighted_binary alf_weighted_uniform \
+  alf_weighted_shuffled_s0 alf_weighted_shuffled_s1 alf_weighted_shuffled_s2 alf_weighted_shuffled_s3 \
+  alf_weighted_shuffled_s4 --out results/b1
+#   cổng B-1 (tự động, cả hai so sánh + Holm + kiểm tra nhánh đồng nhất và bản xáo trộn):
+python -m vcm.alf.gate --results results/b1 --structure ldp --metric map --split report \
+  --weights-root results/b1/weights --out results/b1/gate_b1_ldp
 ```
 
 ## 3. Nhánh A
@@ -91,10 +101,11 @@ python -m vcm.evaluate --results results/ramu/<seq>/runs --pseudo results/origin
 python -m vcm.ramu.runner collect --runs results/ramu/<seq>/runs --candidates results/ramu/<seq>/cand \
   --sequence <seq> --structure ldp --qp <Q> --out results/ramu/<seq>/cand
 #   -> interventions.csv (status: not_realised | realised_no_effect | effective | unexplained), realisation.json
-#   "unexplained" > 0: dừng và điều tra trước khi phân tích
+#   "unexplained" > 0: điều tra (so trace, log). Không xoá chúng khỏi interventions.csv
 
 # cổng A1 trên mọi chuỗi report (configs/ramu_inputs.example.yaml)
-# quyết định: gate_a1.json (can thiệp realised); độ nhạy: gate_a1_sensitivity.json; độ phủ: coverage.json
+# quyết định: gate_a1.json (mọi can thiệp requested); phụ + độ nhạy: gate_a1_secondary.json;
+# chẩn đoán: realisation_diagnostics.csv; độ phủ: coverage.json
 python -m vcm.ramu.analysis --inputs configs/ramu_inputs.yaml --out results/ramu/a1
 ```
 

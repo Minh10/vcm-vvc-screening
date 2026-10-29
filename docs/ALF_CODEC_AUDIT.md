@@ -2,9 +2,9 @@
 
 Ngày: 2026-10-28. Mã nguồn: VTM-24.0, commit `ca331de230f27e0489df9d2fa6c006e2dcd2ed89` (bản import trên GitHub
 `Minh10/VVCSoftware_VTM`). Số dòng dưới đây là của tệp **gốc** tại commit đó; hook nằm ở nhánh `vcm-hooks`
-(commit `9d0aceb`, mô tả trong `VCM_HOOKS.md` của repo VTM). Repo VTM là riêng tư; toàn bộ thay đổi so với VTM-24.0
-có trong [`third_party/vtm_patch/vcm-hooks.patch`](../third_party/vtm_patch/vcm-hooks.patch) (12 tệp, +439/−3,
-SHA-256 `16fb47de…`); áp lên VTM-24.0 cho đúng tree `8dd3ddef…` của `vcm-hooks`. Kiểm toán độc lập nên đọc bản vá này:
+(commit `f1b3119`, mô tả trong `VCM_HOOKS.md` của repo VTM). Repo VTM là riêng tư; toàn bộ thay đổi so với VTM-24.0
+có trong [`third_party/vtm_patch/vcm-hooks.patch`](../third_party/vtm_patch/vcm-hooks.patch) (12 tệp, +442/−3,
+SHA-256 `6dfc1723…`); áp lên VTM-24.0 cho đúng tree `0a28da51…` (`third_party/vtm_patch/EXPECTED_TREE`). Kiểm toán độc lập nên đọc bản vá này:
 mọi thay đổi nằm ở bộ mã (`source/App/EncoderApp`, `source/Lib/EncoderLib`), không đụng `DecoderLib`/`CommonLib`.
 
 **Kết luận chính.** Toàn bộ đường đi ALF luma đã được đọc và cài đặt lại trong `tools/vcm/alf/spec.py`; bản
@@ -87,6 +87,9 @@ Không có thay đổi nào ở bộ giải mã, cú pháp, CABAC, ME/MC, biến
 | Tắt mọi hook: bitstream trùng byte VTM gốc, AI và LDP (QP 27) | Qua (`afefdfbc…`, `d590ceef…`) |
 | Sau khi đổi trace (`9d0aceb`): hook tắt và trace bật đều trùng byte VTM gốc, AI/LDP/RA (QP 32, 9 khung, `TemporalSubsampleRatio=1`) | Qua (`a9b58205…`, `8f5afc85…`, `384c93b0…`) |
 | Biến thể chỉ ghi (`--VCMAlfDumpDir`, `--VCMTraceFile`) qua `vcm.jobs`: bitstream trùng biến thể gốc | Qua (AI, LDP) |
+| `f1b3119`: bản đồ trọng số có `+Inf` hoặc dư byte bị từ chối; trọng số hợp lệ cho bitstream không đổi (`94da555b…`); tắt hook trùng VTM gốc (`675049f1…`) | Qua |
+| Nhánh `alf_weighted_uniform` (trọng số toàn 1) trùng byte `alf_default` (LDP, QP 32) | Qua |
+| Đường bản vá (`fetch_vtm.sh`, `VTM_SOURCE=patch`) và đường nhánh cho cùng tree `0a28da51…`; bản vá bị sửa → dừng | Qua |
 | `spec.py` vs port nguyên văn vòng lặp C++ (CTU 16, nhiều lần qua VB) | Trùng hoàn toàn (test tự động) |
 | `spec.py` vs đầu ra ALF thật của VTM (7 ảnh có ALF, AI + LDP) | 0 sai khác / ~167.000 mẫu bị đổi |
 | Hệ số ngoài (Wiener + ngẫu nhiên có clipping phi tuyến): VTM dùng đúng hệ số, mọi CTB = APS mới; decoder gốc khớp MD5; numpy tái tạo bit-exact | Qua |

@@ -1,0 +1,21 @@
+name: tests
+on:
+  push:
+    branches: [main, "claude/**", "team/**"]
+  pull_request:
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+  vtm-patch:
+    # the public patch must apply to VTM-24.0 and give the pinned tree (no build: that is scripts/preflight.sh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: VTM_SOURCE=patch scripts/fetch_vtm.sh

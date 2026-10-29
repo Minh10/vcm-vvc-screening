@@ -15,13 +15,18 @@ Gate A1 (docs/RESEARCH_PLAN.md), all conditions required:
 4. B4 beats the shuffled-graph control B5: median(rho_B4 − rho_B5) > 0 and Holm-adjusted p < alpha.
 
 Populations (fixed before any result is seen):
-- **primary**: realised interventions (``realised`` from ``vcm.ramu.runner collect``: the target CTU's QP or
-  decisions changed). An unrealised intervention leaves the bitstream unchanged, so it carries no information
-  about propagation; including it would reward predictors of *realisability* rather than of propagation.
-- sensitivity ``all_requested``: every requested intervention (unrealised ones have ΔL = ΔR = 0).
-- sensitivity ``translational``: primary, restricted to CTUs whose inter area is at most ``max_approx_frac``
-  approximate motion (affine/GEO/sub-block; ``graph.coverage``), with edges of approximate CUs dropped.
-The gate decision is taken on the primary population only; the sensitivities are reported next to it.
+- **primary — all requested interventions.** An allocator does not know beforehand which CTUs a ΔQP will actually
+  affect, so the policy-relevant question is prediction over every action it could request (unrealised ones have
+  ΔL = ΔR = 0 and count). Selecting on ``realised`` would be selection on a post-intervention outcome.
+- secondary ``realised``: interventions whose target CTU's QP or decisions changed — the predictor's ability to
+  rank actions that do change the encoding. Not used for the decision. If B4 beats B3 here but not on the primary
+  population, the graph features are analytically informative but not shown to improve allocation.
+- sensitivity ``translational``: primary population restricted to CTUs with at most ``max_approx_frac``
+  approximate-motion area (affine/GEO/sub-block; ``graph.coverage``), with edges of approximate CUs dropped.
+- diagnostics: realised/effective rates by sequence, QP, temporal layer, anchor residual, and terciles of local
+  importance, fan-out and motion (``realisation_diagnostics.csv``).
+``unexplained`` interventions (bitstream changed, target-CTU trace did not) are never dropped: they stay in the
+primary population, are listed in the report, and make the secondary population invalid until investigated.
 
 CLI::
 
@@ -144,6 +149,29 @@ def gate_a1(scores: pd.DataFrame, min_median_gain: float = 0.05, min_regret_redu
     }
 
 
+def realisation_diagnostics(df: pd.DataFrame) -> pd.DataFrame:
+    """Rates of realised / effective / unexplained interventions by factor (computed on all requested)."""
+    d = df.copy()
+    d["is_realised"] = d["realised"].astype(bool)
+    d["is_effective"] = d["status"] == "effective"
+    d["is_unexplained"] = d["status"] == "unexplained"
+    factors = {"sequence": d["sequence"]}
+    for col in ("qp", "structure", "temporal_id", "resid_in_anchor"):
+        if col in d.columns:
+            factors[col] = d[col]
+    for col in ("imp", "fanout1", "mean_mv", "infl"):
+        if col in d.columns and d[col].nunique() > 1:
+            factors[f"{col}_tercile"] = pd.qcut(d[col].rank(method="first"), 3, labels=["low", "mid", "high"])
+    rows = []
+    for name, f in factors.items():
+        g = d.groupby(f.astype(str), observed=True)
+        for level, grp in g:
+            rows.append({"factor": name, "level": level, "n": len(grp),
+                         "realised": grp["is_realised"].mean(), "effective": grp["is_effective"].mean(),
+                         "unexplained": grp["is_unexplained"].mean()})
+    return pd.DataFrame(rows)
+
+
 def interactions(singles: pd.DataFrame, pairs: pd.DataFrame) -> pd.DataFrame:
     """I^L = ΔL_ab − ΔL_a − ΔL_b and I^R likewise, summarised by ``same_branch``.
 
@@ -193,6 +221,9 @@ def main(argv=None) -> int:
     for s in spec["sequences"]:
         pic = Picture(s["width"], s["height"], s.get("ctu", 128))
         iv = pd.read_csv(s["interventions"])
+        for key in ("qp", "structure"):
+            if key in s:
+                iv[key] = s[key]
         trace = load_trace(s["trace"])
         cover[s["name"]] = coverage(trace)
         tables.append(build_sequence_table(s["name"], pic, trace, pd.read_csv(s["boxes"]), iv, rho, seed))
@@ -203,36 +234,55 @@ def main(argv=None) -> int:
             pairs.append(pd.read_csv(s["pairs"]).assign(sequence=s["name"]))
     df_all = pd.concat(tables, ignore_index=True)
     df_tr = pd.concat(tables_tr, ignore_index=True)
-    if "realised" in df_all.columns:
-        keep = df_all["realised"].astype(bool)
-        population_note = f"realised {int(keep.sum())} of {len(df_all)} requested"
-    else:
-        keep = pd.Series(True, index=df_all.index)
-        population_note = "realisation unknown (no intervention traces): all requested interventions used"
+    has_realisation = "realised" in df_all.columns
+    realised = df_all["realised"].astype(bool) if has_realisation else pd.Series(True, index=df_all.index)
+    n_unexplained = int((df_all.get("status", pd.Series(dtype=str)) == "unexplained").sum())
     populations = {
-        "primary": df_all[keep].reset_index(drop=True),
-        "all_requested": df_all,
-        "translational": df_tr[keep & (df_tr["approx_frac"] <= max_approx)].reset_index(drop=True),
+        "primary": df_all,
+        "translational": df_tr[df_tr["approx_frac"] <= max_approx].reset_index(drop=True),
     }
+    if has_realisation:
+        populations["realised"] = df_all[realised].reset_index(drop=True)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     df_all.to_csv(out / "design.csv", index=False)
     (out / "coverage.json").write_text(json.dumps(cover, indent=2))
+    diag = realisation_diagnostics(df_all) if has_realisation else pd.DataFrame()
+    if len(diag):
+        diag.to_csv(out / "realisation_diagnostics.csv", index=False)
     results = {}
     for name, df in populations.items():
         sc = score_models(df, kind, frac, seed)
         results[name] = (sc, gate_a1(sc, seed=seed), len(df))
     scores, gate, _ = results["primary"]
     scores.to_csv(out / "scores.csv", index=False)
-    gate["population"] = population_note
+    gate["population"] = f"all {len(df_all)} requested interventions"
+    gate["unexplained_interventions"] = n_unexplained
     (out / "gate_a1.json").write_text(json.dumps(gate, indent=2))
-    sens = {k: {"n": n, **g} for k, (_, g, n) in results.items() if k != "primary"}
-    (out / "gate_a1_sensitivity.json").write_text(json.dumps(sens, indent=2, default=str))
+    other = {k: {"n": n, **g} for k, (_, g, n) in results.items() if k != "primary"}
+    if "realised" in other and n_unexplained:
+        other["realised"]["valid"] = False
+        other["realised"]["invalid_reason"] = f"{n_unexplained} unexplained interventions: realisation labels unreliable"
+    (out / "gate_a1_secondary.json").write_text(json.dumps(other, indent=2, default=str))
     text = report(scores, gate)
-    text += f"\n_Population: {population_note}._\n\n## Sensitivity (not used for the decision)\n\n"
-    text += "| Population | n | Decision |\n| --- | --- | --- |\n"
-    for k, v in sens.items():
-        text += f"| {k} | {v['n']} | {v['decision']} |\n"
+    text += f"\n_Primary population: all {len(df_all)} requested interventions"
+    text += (f" ({int(realised.sum())} realised)._\n" if has_realisation else
+             "; realisation unknown (no intervention traces)._\n")
+    if n_unexplained:
+        text += (f"\n> **{n_unexplained} unexplained interventions** (bitstream changed without a trace change in "
+                 "the target CTU). Kept in the primary population; the realised analysis is invalid until they are "
+                 "explained.\n")
+    text += "\n## Secondary and sensitivity analyses (not used for the decision)\n\n"
+    text += "| Population | n | Decision | Note |\n| --- | --- | --- | --- |\n"
+    for k, v in other.items():
+        text += f"| {k} | {v['n']} | {v['decision']} | {v.get('invalid_reason', '')} |\n"
+    if "realised" in other:
+        b43_p = gate["B4_minus_B3"]["median"]
+        b43_r = other["realised"]["B4_minus_B3"]["median"]
+        text += (f"\nB4 − B3 (median ρ gain): primary {b43_p:+.3f}, realised {b43_r:+.3f}. A gain only on realised "
+                 "interventions is analytically informative but does not show better allocation.\n")
+    if len(diag):
+        text += "\n## Realisation diagnostics\n\n" + diag.to_markdown(index=False, floatfmt=".3f") + "\n"
     text += "\n## Motion-model coverage (share of inter area)\n\n| Sequence | approximate | by flag |\n| --- | --- | --- |\n"
     for k, c in cover.items():
         approx = f"{100 * c['approx_frac_of_inter']:.1f} %" if c["known"] else "unknown (old trace)"

@@ -10,8 +10,10 @@ chọn trục chính của luận án. Mọi thí nghiệm giữ bitstream VVC h
 | --- | --- |
 | Bộ mã VTM-24.0 + hook sàng lọc (nhánh `vcm-hooks` của kho riêng `Minh10/VVCSoftware_VTM`; bản vá công khai để kiểm toán: [`third_party/vtm_patch/vcm-hooks.patch`](third_party/vtm_patch/vcm-hooks.patch)) | Xong; tắt hook = trùng byte VTM gốc (AI, LDP, RA) |
 | ALF offline (`tools/vcm/alf`) | Xong; **bit-exact** với đầu ra ALF của VTM |
-| Driver nhánh A và B, đánh giá, thống kê | Xong; 94 test tự động |
-| Độ tin cậy pipeline (căn khung AI, fingerprint cache, pseudo-variant, requested/realised/effective, độ phủ đồ thị) | Xong sau rà soát độc lập ([DECISIONS](docs/DECISIONS.md), 2026-10-28 tối) |
+| Driver nhánh A và B, đánh giá, thống kê, cổng B-1 tự động | Xong; 103 test tự động, CI GitHub |
+| Độ tin cậy pipeline (căn khung AI, fingerprint cache, pseudo-variant, requested/realised/effective, độ phủ đồ thị, khoá tree VTM) | Xong sau hai vòng rà soát độc lập ([DECISIONS](docs/DECISIONS.md), 2026-10-28 tối, khuya) |
+| Đối chứng O1-B (ROI nhị phân, xáo trộn 5 seed cùng phân bố trọng số, đồng nhất) | Xong; nhánh đồng nhất trùng byte ALF mặc định |
+| Preflight trên bản checkout sạch (`scripts/preflight.sh`) | Xem [DECISIONS](docs/DECISIONS.md), 2026-10-29 |
 | Bộ phân bổ QP cho cổng A2 | **Chưa** — chỉ cài khi A1 = GO |
 | Kiểm toán ALF ([docs/ALF_CODEC_AUDIT.md](docs/ALF_CODEC_AUDIT.md)) | Xong |
 | P0 trên máy chủ nhóm, dữ liệu CTC, detector CTC | **Chưa** — cần dữ liệu và tài nguyên của nhóm ([RUNBOOK](docs/RUNBOOK.md)) |
@@ -36,13 +38,13 @@ tích hợp VCM-RS, Gauss–Newton sketch.
 ```
 configs/            cấu hình thí nghiệm, biến thể bộ mã, mẫu bảng chuỗi và đầu vào phân tích
 docs/               kế hoạch, runbook, kiểm toán ALF, đặc tả RAMU-Lite, nhật ký quyết định, tiền lệ
-scripts/            tải/build VTM, smoke test
-tools/vcm/          jobs (mã hoá hàng loạt + manifest), evaluate (mAP, nhãn giả), curves (BD theo chuỗi),
+scripts/            tải/build VTM, smoke test, preflight
+tools/vcm/          jobs (mã hoá hàng loạt + manifest), evaluate (mAP, nhãn giả), curves (BD theo chuỗi), export,
                     stats (kiểm định theo chuỗi), bd_rate, yuv, detect
 tools/vcm/ramu/     nhánh A: đồ thị tham chiếu, đặc trưng B1–B6, cổng A1, mô phỏng, runner can thiệp
 tools/vcm/alf/      nhánh B: ALF chuẩn VVC (bit-exact), Wiener có trọng số, chiếu hệ số, oracle O1-A, driver
-tests/              94 test
-third_party/        VTM (không commit), VTM_COMMIT, VTM_PROVENANCE, vtm_patch/vcm-hooks.patch (bản vá công khai)
+tests/              103 test
+third_party/        VTM, VTM_COMMIT, VTM_PROVENANCE (sinh khi tải, không commit); vtm_patch/: bản vá công khai + EXPECTED_TREE (mốc ghim)
 results/            kết quả tổng hợp (dữ liệu thô không commit)
 ```
 
@@ -54,7 +56,8 @@ pytest -q
 scripts/fetch_vtm.sh && scripts/build_vtm.sh && scripts/smoke_test.sh ldp
 ```
 
-Sau đó làm theo [docs/RUNBOOK.md](docs/RUNBOOK.md).
+Sau đó làm theo [docs/RUNBOOK.md](docs/RUNBOOK.md). Phối hợp giữa máy chủ nhóm (Cursor) và phiên Claude:
+[docs/COLLABORATION.md](docs/COLLABORATION.md); quy tắc cho mọi agent: [AGENTS.md](AGENTS.md).
 
 ## Quy tắc đánh giá (mọi nhánh)
 

@@ -61,7 +61,7 @@ của từng lần chạy so với trace anchor:
 | effective | Bitstream khác anchor; ΔR, ΔL đo tác động | `bitstream_changed`, `delta_bits`, `delta_loss` |
 
 `status` ∈ `not_realised`, `realised_no_effect`, `effective`, `unexplained` (bitstream đổi nhưng trace CTU đích không
-đổi — lỗ hổng của trace, phải điều tra trước khi phân tích). `ctus_changed` đếm số CTU có quyết định thay đổi ở mọi
+đổi — có thể là lỗ hổng của trace, phải điều tra). `ctus_changed` đếm số CTU có quyết định thay đổi ở mọi
 ảnh (phạm vi lan toả).
 
 **Không lọc theo phần dư.** Hook ép QP *và* λ của CTU đích; λ đổi có thể đổi quyết định RD (ví dụ biến CU skip thành
@@ -70,13 +70,21 @@ CU có phần dư) dù anchor không có phần dư. `runner sample` lấy mẫu
 4/4 CTU có phần dư và **3/8 CTU không có phần dư** là effective (2 trong 3 chỉ qua thay đổi quyết định, QP cuối không
 đổi); 5 can thiệp not_realised đều cho bitstream trùng byte với anchor; 0 unexplained.
 
-**Quần thể phân tích** (cố định trước khi có kết quả):
-- chính: can thiệp realised. Can thiệp not_realised cho bitstream trùng anchor (ΔL = ΔR = 0), không mang thông tin về
-  lan truyền; giữ chúng sẽ thưởng cho bộ dự đoán *khả năng xảy ra* thay vì *lan truyền*;
-- độ nhạy 1: mọi can thiệp requested;
-- độ nhạy 2: realised, chỉ CTU tịnh tiến (xem mục độ phủ).
-Quyết định cổng A1 chỉ dựa trên quần thể chính; hai độ nhạy được báo cạnh nó (`gate_a1_sensitivity.json`).
-Báo cáo tỉ lệ realised/effective theo chuỗi và QP (`realisation.json`), vì nó giới hạn không gian hành động của A2.
+**Quần thể phân tích** (cố định trước khi có kết quả; sửa ngày 2026-10-28 theo rà soát, trước mọi dữ liệu):
+- **chính — mọi can thiệp requested.** Bộ phân bổ thực tế không biết trước CTU nào sẽ realised, nên câu hỏi gắn với
+  chính sách là dự đoán trên mọi hành động nó có thể yêu cầu (can thiệp not_realised có ΔL = ΔR = 0 và vẫn được
+  tính). Chọn theo realised là chọn mẫu theo kết quả sau can thiệp. Quyết định A1 chỉ dựa trên quần thể này
+  (`gate_a1.json`).
+- phụ — can thiệp realised: khả năng xếp hạng các hành động *thực sự* đổi bitstream. Nếu B4 thắng B3 ở đây mà không
+  thắng ở quần thể chính, đồ thị có giá trị phân tích nhưng chưa chứng minh phân bổ bit tốt hơn. Báo cáo in cả hai
+  hiệu số median ρ.
+- độ nhạy — quần thể chính, chỉ CTU tịnh tiến (xem mục độ phủ).
+- chẩn đoán — tỉ lệ realised/effective/unexplained theo chuỗi, QP, cấu trúc, lớp thời gian, phần dư anchor và tam
+  phân vị của độ quan trọng, fan-out, chuyển động, lan truyền (`realisation_diagnostics.csv`).
+
+Can thiệp `unexplained` không bao giờ bị loại tự động: chúng ở lại quần thể chính, được liệt kê trong báo cáo, và
+làm phân tích realised mất hiệu lực (`valid: false` trong `gate_a1_secondary.json`) tới khi được giải thích — chúng
+có thể cho thấy trace chưa ghi đủ thay đổi do λ gây ra.
 
 ## Thiết kế thí nghiệm
 

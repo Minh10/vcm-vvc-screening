@@ -171,11 +171,29 @@ def test_wiener_and_weights_commands(fake_dump, tmp_path):
     wd = tmp_path / "wmaps"
     experiments.main(["weights", "--detections", str(tmp_path / "det.json"), "--gt", str(tmp_path / "gt.json"),
                       "--width", "48", "--height", "32", "--pocs", "2", "--out", str(wd)])
-    w0 = np.fromfile(wd / "w_0.f32", "<f4").reshape(32, 48)
-    w1 = np.fromfile(wd / "w_1.f32", "<f4").reshape(32, 48)
-    assert np.allclose(w0, 1.0)                                   # no boxes -> uniform (mean-normalised)
+    load = lambda mode, poc: np.fromfile(wd / mode / f"w_{poc}.f32", "<f4").reshape(32, 48)   # noqa: E731
+    assert np.allclose(load("continuous", 0), 1.0)                # no boxes -> uniform (mean-normalised)
+    w1 = load("continuous", 1)
     assert w1.mean() == pytest.approx(1.0, rel=1e-5) and w1[0, 0] > w1[-1, -1]
-    experiments.main(["wiener", "--dump", str(d), "--weights", str(wd), "--out", str(tmp_path / "ww.txt")])
+    b1 = load("binary", 1)                                        # score ignored: two levels only
+    assert len(np.unique(np.round(b1, 5))) == 2 and b1[0, 0] > b1[-1, -1]
+    summ = json.loads((wd / "weights_summary.json").read_text())["arms"]
+    shifts = set()
+    for seed in range(5):                                         # one arm per pre-registered seed
+        sh = load(f"shuffled_s{seed}", 1)
+        assert np.array_equal(np.sort(sh.ravel()), np.sort(w1.ravel()))          # identical weight distribution
+        assert sh[:16, :24].mean() < w1[:16, :24].mean()                         # no longer on the object
+        arm = summ[f"shuffled_s{seed}"]
+        assert arm["same_weight_distribution_as_continuous"] and arm["shift"]["accepted"]
+        assert arm["roi_overlap"] <= arm["shift"]["chance"] + 1e-12
+        assert arm["weight_share_in_roi"] < summ["continuous"]["weight_share_in_roi"]
+        shifts.add((arm["shift"]["dy"], arm["shift"]["dx"]))
+    assert len(shifts) > 1
+    s0 = [load("shuffled_s0", p) for p in (0, 1)]                # one shift for the whole sequence
+    assert np.allclose(s0[0], 1.0)
+    assert np.array_equal(load("uniform", 1), np.ones((32, 48), "<f4"))
+    experiments.main(["wiener", "--dump", str(d), "--weights", str(wd / "continuous"), "--out",
+                      str(tmp_path / "ww.txt")])
     assert sorted(project.read(tmp_path / "ww.txt")) == [0, 1]
 
 
@@ -190,7 +208,7 @@ def test_weights_follow_anchor_frame_step(tmp_path):
     args = ["weights", "--detections", str(tmp_path / "det.json"), "--gt", str(tmp_path / "gt.json"),
             "--width", "48", "--height", "32", "--pocs", "2", "--anchor-job", str(job)]
     experiments.main(args + ["--out", str(tmp_path / "w")])
-    w1 = np.fromfile(tmp_path / "w" / "w_1.f32", "<f4").reshape(32, 48)
+    w1 = np.fromfile(tmp_path / "w" / "continuous" / "w_1.f32", "<f4").reshape(32, 48)
     assert w1[0, 0] > w1[-1, -1]                                   # POC 1 = source frame 8
     with pytest.raises(SystemExit, match="contradicts"):
         experiments.main(args + ["--poc-step", "1", "--out", str(tmp_path / "w2")])
