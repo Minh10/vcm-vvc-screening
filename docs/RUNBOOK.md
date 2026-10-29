@@ -41,6 +41,10 @@ Không cần GT riêng cho AI. Các driver nhánh B đọc step từ `--anchor-j
 **Cache.** Mọi lệnh có thể chạy lại: kết quả chỉ được dùng lại khi fingerprint khớp (xem RESEARCH_PLAN, "Độ tin cậy
 của pipeline"). Thêm `--strict-cache` vào `vcm.jobs` ở lần chạy báo cáo để cache lệch là lỗi thay vì chạy lại.
 
+**Preflight trước P0** (clone sạch, đường bản vá, build, smoke AI/LDP/RA, trùng byte với VTM gốc):
+`scripts/preflight.sh <nhánh>` → `results/p0/preflight_<thời điểm>.json` (`"pass": true`). Ở lần chạy báo cáo đặt
+`VCM_HASH_CACHE=off` để mọi đầu vào được băm lại toàn bộ.
+
 ## 1. Điểm tham chiếu chung
 
 ```bash
@@ -69,13 +73,16 @@ python -m vcm.alf.experiments oracle --dump results/b1/dump/$J --decoded results
 #   so pseudo-variant: vcm.curves ... --test o1a_relaxed_oracle --allow-pseudo (báo cáo mang nhãn chẩn đoán)
 
 # O1-B (bằng chứng quyết định): bản đồ trọng số -> ALF encoder của chính VTM
-# bốn nhánh trọng số: continuous (chính), binary, shuffled, uniform (phải trùng byte alf_default)
+# các nhánh trọng số: continuous (chính), binary, shuffled_s0..s4 (5 seed đặt trước), uniform (phải trùng byte alf_default)
 python -m vcm.alf.experiments weights --detections results/original/<seq>/detections.json --gt <annotations.json> \
   --width <W> --height <H> --pocs <coded_frames> --anchor-job results/b0/<seq>__<st>__qp<Q>__alf_default \
   --out results/b1/weights/<seq>__<st>
-python -m vcm.jobs ... --only-variants alf_weighted alf_weighted_binary alf_weighted_shuffled \
-  alf_weighted_uniform --out results/b1          # alf_default được thêm tự động làm tham chiếu
-#   cổng B-1: vcm.curves --anchor alf_default --test alf_weighted, và --anchor alf_weighted_shuffled --test alf_weighted
+python -m vcm.jobs ... --only-variants alf_default alf_weighted alf_weighted_binary alf_weighted_uniform \
+  alf_weighted_shuffled_s0 alf_weighted_shuffled_s1 alf_weighted_shuffled_s2 alf_weighted_shuffled_s3 \
+  alf_weighted_shuffled_s4 --out results/b1
+#   cổng B-1 (tự động, cả hai so sánh + Holm + kiểm tra nhánh đồng nhất và bản xáo trộn):
+python -m vcm.alf.gate --results results/b1 --structure ldp --metric map --split report \
+  --weights-root results/b1/weights --out results/b1/gate_b1_ldp
 ```
 
 ## 3. Nhánh A

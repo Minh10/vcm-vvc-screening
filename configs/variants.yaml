@@ -28,9 +28,23 @@ variants:
   alf_weighted_binary:           # control: 1 inside any box, bg elsewhere (is the score useful?)
     branch: B
     args: ["--VCMAlfWeightDir=results/b1/weights/{sequence}__{structure}/binary"]
-  alf_weighted_shuffled:         # control: same boxes at random positions (is alignment with objects useful?)
+  # control: the continuous map cyclically shifted, one offset per sequence and pre-registered seed (identical
+  # weight distribution per picture, temporally coherent, ROI overlap <= chance). The B-1 gate averages the seeds.
+  alf_weighted_shuffled_s0:
     branch: B
-    args: ["--VCMAlfWeightDir=results/b1/weights/{sequence}__{structure}/shuffled"]
+    args: ["--VCMAlfWeightDir=results/b1/weights/{sequence}__{structure}/shuffled_s0"]
+  alf_weighted_shuffled_s1:
+    branch: B
+    args: ["--VCMAlfWeightDir=results/b1/weights/{sequence}__{structure}/shuffled_s1"]
+  alf_weighted_shuffled_s2:
+    branch: B
+    args: ["--VCMAlfWeightDir=results/b1/weights/{sequence}__{structure}/shuffled_s2"]
+  alf_weighted_shuffled_s3:
+    branch: B
+    args: ["--VCMAlfWeightDir=results/b1/weights/{sequence}__{structure}/shuffled_s3"]
+  alf_weighted_shuffled_s4:
+    branch: B
+    args: ["--VCMAlfWeightDir=results/b1/weights/{sequence}__{structure}/shuffled_s4"]
   alf_weighted_uniform:          # sanity: all-ones weights must reproduce the default ALF exactly
     branch: B
     args: ["--VCMAlfWeightDir=results/b1/weights/{sequence}__{structure}/uniform"]

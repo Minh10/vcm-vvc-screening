@@ -11,7 +11,8 @@ A job is (sequence, prediction structure, QP, variant). For every job the runner
    determines the result in ``<out>/<job_id>/manifest.json``.
 
 Caching: an existing manifest is reused only if its status is ``ok`` **and** its fingerprint equals the current one
-(command, cfg content, encoder/decoder binaries, input signature, hook input files, VTM commit). A stale result is
+(command, cfg content, encoder/decoder binaries, full SHA-256 of the input, hook input files, VTM tree). Hashes are
+memoised on disk by (path, size, mtime, inode); ``VCM_HASH_CACHE=off`` forces re-hashing (use it for report runs). A stale result is
 re-run (or rejected with ``--strict-cache``).
 
 Variant arguments may use placeholders resolved per job: ``{sequence}``, ``{structure}``, ``{qp}``, ``{variant}``,
@@ -39,6 +40,7 @@ import os
 import re
 import shlex
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -53,7 +55,7 @@ STRUCTURE_CFGS = {
 }
 HOOK_PATH_OPTIONS = ("--VCMQpOffsetFile", "--VCMAlfWeightDir", "--VCMAlfExternalFile")   # inputs (must exist)
 HOOK_OUTPUT_OPTIONS = ("--VCMTraceFile", "--VCMAlfDumpDir")                                # outputs
-FINGERPRINT_VERSION = 1
+FINGERPRINT_VERSION = 2          # v2: full-content input hash
 
 
 @dataclass(frozen=True)
@@ -230,27 +232,49 @@ def _digest(path: Path, algo: str) -> str:
     return h.hexdigest()
 
 
-@functools.lru_cache(maxsize=64)
-def _file_sha(path: str, size: int, mtime_ns: int) -> str:
-    return _digest(Path(path), "sha256")
+_HASH_LOCK = threading.Lock()
+
+
+def _hash_cache_path() -> Path | None:
+    """Persistent SHA-256 cache (VCM_HASH_CACHE=off disables it, e.g. for the final report run)."""
+    v = os.environ.get("VCM_HASH_CACHE", "")
+    if v.lower() == "off":
+        return None
+    return Path(v) if v else Path.home() / ".cache" / "vcm-vvc-screening" / "sha256.json"
+
+
+@functools.lru_cache(maxsize=256)
+def _file_sha(path: str, size: int, mtime_ns: int, inode: int) -> str:
+    """Full-content SHA-256, memoised in memory and on disk by (path, size, mtime, inode). A file rewritten in
+    place with its mtime restored would be missed by the disk cache; disable it for the report run."""
+    key = f"{path}|{size}|{mtime_ns}|{inode}"
+    cache_path = _hash_cache_path()
+    if cache_path is not None and cache_path.exists():
+        with _HASH_LOCK:
+            try:
+                hit = json.loads(cache_path.read_text()).get(key)
+            except (OSError, ValueError):
+                hit = None
+        if hit:
+            return hit
+    digest = _digest(Path(path), "sha256")
+    if cache_path is not None:
+        with _HASH_LOCK:
+            try:
+                data = json.loads(cache_path.read_text()) if cache_path.exists() else {}
+            except (OSError, ValueError):
+                data = {}
+            data[key] = digest
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cache_path.with_suffix(f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(data))
+            os.replace(tmp, cache_path)
+    return digest
 
 
 def _sha_file(p: Path) -> str:
     st = p.stat()
-    return _file_sha(str(p.resolve()), st.st_size, st.st_mtime_ns)
-
-
-def _input_signature(p: Path, chunk: int = 8 << 20) -> str:
-    """Size + SHA-256 of the first and last 8 MiB: cheap for multi-GB YUV, still catches replaced inputs."""
-    h = hashlib.sha256()
-    size = p.stat().st_size
-    h.update(str(size).encode())
-    with open(p, "rb") as fh:
-        h.update(fh.read(chunk))
-        if size > chunk:
-            fh.seek(max(chunk, size - chunk))
-            h.update(fh.read(chunk))
-    return h.hexdigest()
+    return _file_sha(str(p.resolve()), st.st_size, st.st_mtime_ns, st.st_ino)
 
 
 def _path_sha(p: Path) -> str:
@@ -271,7 +295,7 @@ def fingerprint(job: Job, enc: Path, dec: Path, vtm_root: Path, vtm_commit: str 
         "cfg_sha256": _sha_file(vtm_root / STRUCTURE_CFGS[job.structure]),
         "encoder_sha256": _sha_file(enc),
         "decoder_sha256": _sha_file(dec),
-        "input_signature": _input_signature(Path(job.sequence.path)),
+        "input_sha256": _sha_file(Path(job.sequence.path)),          # full content, every byte
         "hook_inputs": {v: _path_sha(Path(v)) for v in _option_values(job.extra_args, HOOK_PATH_OPTIONS)},
         "vtm_commit": vtm_commit,
     }
@@ -441,6 +465,8 @@ def main(argv=None) -> int:
         return 0
 
     enc, dec = find_binary(vtm, "EncoderApp"), find_binary(vtm, "DecoderApp")
+    for path in sorted({j.sequence.path for j in jobs}):     # hash each input once, before the parallel jobs
+        _sha_file(Path(path))
     provenance = {**vtm_provenance(), "variants_file": a.variants, "sequences_file": a.sequences}
     failures = 0
     done: dict[str, dict] = {}

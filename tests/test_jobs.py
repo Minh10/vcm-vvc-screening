@@ -220,3 +220,23 @@ def test_export_keeps_only_shareable_summaries(tmp_path):
     kept, _ = export(r, tmp_path / "out", max_mb=0.001)
     assert sorted(str(p.relative_to(r)) for p in kept) == ["report.md", "s__ldp__qp32__a/manifest.json",
                                                            "s__ldp__qp32__a/task_metrics.json"]
+
+
+def test_input_fingerprint_covers_every_byte(setup, tmp_path):
+    import os
+    from vcm import jobs as J
+    tmp, vtm, enc, dec, _ = setup
+    big = tmp / "big.yuv"
+    data = bytearray(os.urandom(24 << 20))                     # 24 MiB: the middle is outside head/tail 8 MiB
+    big.write_bytes(data)
+    job = Job(Sequence("b", str(big), 32, 24, 30.0, 2), "ldp", 32, "x")
+    h1 = J.fingerprint(job, enc, dec, vtm)["input_sha256"]
+    st = big.stat()
+    data[12 << 20] ^= 0xFF
+    big.write_bytes(data)
+    os.utime(big, ns=(st.st_atime_ns, st.st_mtime_ns + 1))
+    assert J.fingerprint(job, enc, dec, vtm)["input_sha256"] != h1
+    assert J._hash_cache_path().exists()                       # memoised on disk (isolated by conftest)
+    os.environ["VCM_HASH_CACHE"] = "off"
+    J._file_sha.cache_clear()
+    assert J._hash_cache_path() is None and J.fingerprint(job, enc, dec, vtm)["input_sha256"] != h1

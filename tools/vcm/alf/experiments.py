@@ -2,7 +2,8 @@
 
 ``weights``  O1-B input: per-POC luma weight maps w_<poc>.f32 from detector boxes on the *original* frames, for
              ``--VCMAlfWeightDir`` (VTM's own ALF encoder then designs, merges and switches filters on weighted
-             statistics). One folder per arm: continuous ROI, binary ROI, shuffled ROI, uniform (sanity).
+             statistics). One folder per arm: continuous ROI, binary ROI, shuffled ROI (one per seed),
+             uniform (sanity).
              This is ROI-weighted pixel SSE — task-*guided*, not a minimisation of a task loss.
 ``wiener``   O1-A' / O1-B-forced input: per-POC (weighted) Wiener coefficients designed offline from an ALF dump
              (pre-ALF luma + original), written for ``--VCMAlfExternalFile`` (forced in every CTB).
@@ -86,33 +87,63 @@ def _anchor_init(dump_dir, poc: int) -> np.ndarray | None:
 
 
 def cmd_weights(a) -> None:
-    """One sub-folder per O1-B arm: <out>/<mode>/w_<poc>.f32, normalised to mean 1 per picture (keeps the
-    distortion scale of VTM's RD decisions; the uniform arm is then exactly 1)."""
+    """One sub-folder per O1-B arm: <out>/<arm>/w_<poc>.f32, normalised to mean 1 per picture (keeps the
+    distortion scale of VTM's RD decisions; the uniform arm is then exactly 1). The shuffled control has one arm
+    per pre-registered seed (``shuffled_s<seed>``), each a single cyclic shift of the continuous map for the whole
+    sequence. ``weights_summary.json`` reports, per arm, the weight share inside the true ROI, the ROI overlap, and
+    for shuffled arms the check that every picture's sorted weights equal the continuous arm's."""
     out = Path(a.out)
     boxes = _boxes_by_frame(json.loads(Path(a.detections).read_text()), json.loads(Path(a.gt).read_text()))
     offset, step = _sampling(a)
-    summary = {}
+    empty = (np.zeros((0, 4)), np.zeros(0), np.zeros(0))
+    frame_boxes = [boxes.get(offset + poc * step, empty) for poc in range(a.pocs)]
+    arms: dict[str, tuple[str, tuple[int, int]]] = {}
+    shifts = {}
     for mode in a.modes:
-        (out / mode).mkdir(parents=True, exist_ok=True)
-        rng = np.random.default_rng(a.seed)
-        inside, outside, alignment = [], [], []
-        for poc in range(a.pocs):
-            b, s, _ = boxes.get(offset + poc * step, (np.zeros((0, 4)), np.zeros(0), np.zeros(0)))
-            w = weights.roi_weights(mode, b, s, a.height, a.width, a.bg, a.threshold, rng)
-            w = w / w.mean()
-            w.astype("<f4").tofile(out / mode / f"w_{poc}.f32")
-            roi = weights.box_weights(b, s, a.height, a.width, 0.0, a.threshold) > 0     # true ROI mask
+        if mode != "shuffled":
+            arms[mode] = (mode, (0, 0))
+            continue
+        f = 4
+        masks = [weights.roi_mask(b, s, a.height, a.width, a.threshold)[::f, ::f] for b, s, _ in frame_boxes]
+        for seed in a.shuffle_seeds:
+            sh = weights.choose_shift(masks, a.height, a.width, np.random.default_rng(seed), f)
+            shifts[f"shuffled_s{seed}"] = sh
+            arms[f"shuffled_s{seed}"] = ("shuffled", (sh["dy"], sh["dx"]))
+    summary = {}
+    for arm, (mode, shift) in arms.items():
+        (out / arm).mkdir(parents=True, exist_ok=True)
+        share, inside, outside, hit, roi_px, hist_ok = [], [], [], 0, 0, True
+        for poc, (b, s, _) in enumerate(frame_boxes):
+            if mode == "shuffled":
+                # normalise first, then permute: the written map is an exact permutation of the continuous one
+                ref = weights.roi_weights("continuous", b, s, a.height, a.width, a.bg, a.threshold)
+                ref = (ref / ref.mean()).astype("<f4")
+                w = np.roll(ref, shift, axis=(0, 1))
+                hist_ok &= bool(np.array_equal(np.sort(w.ravel()), np.sort(ref.ravel())))
+            else:
+                w = weights.roi_weights(mode, b, s, a.height, a.width, a.bg, a.threshold, shift)
+                w = w / w.mean()
+            w.astype("<f4").tofile(out / arm / f"w_{poc}.f32")
+            roi = weights.roi_mask(b, s, a.height, a.width, a.threshold)
+            if mode == "shuffled":
+                moved = np.roll(roi, shift, axis=(0, 1))
+                hit += int(np.logical_and(moved, roi).sum())
+                roi_px += int(roi.sum())
             if roi.any() and (~roi).any():
                 inside.append(float(w[roi].mean()))
                 outside.append(float(w[~roi].mean()))
-                alignment.append(float(w[roi].sum() / w.sum()))
-        summary[mode] = {"pocs": a.pocs, "mean_weight_in_roi": float(np.mean(inside)) if inside else None,
-                         "mean_weight_outside_roi": float(np.mean(outside)) if outside else None,
-                         "weight_share_in_roi": float(np.mean(alignment)) if alignment else None}
-    (out / "weights_summary.json").write_text(json.dumps({"bg": a.bg, "threshold": a.threshold, "seed": a.seed,
-                                                          "frame_step": step, "frame_offset": offset,
-                                                          "modes": summary}, indent=2))
-    print(f"wrote {a.pocs} weight maps x {len(a.modes)} arms to {out}")
+                share.append(float(w[roi].sum() / w.sum()))
+        summary[arm] = {"mode": mode, "pocs": a.pocs,
+                        "mean_weight_in_roi": float(np.mean(inside)) if inside else None,
+                        "mean_weight_outside_roi": float(np.mean(outside)) if outside else None,
+                        "weight_share_in_roi": float(np.mean(share)) if share else None}
+        if mode == "shuffled":
+            summary[arm].update({"shift": shifts[arm], "roi_overlap": hit / roi_px if roi_px else None,
+                                 "same_weight_distribution_as_continuous": hist_ok})
+    (out / "weights_summary.json").write_text(json.dumps({
+        "bg": a.bg, "threshold": a.threshold, "shuffle_seeds": a.shuffle_seeds, "frame_step": step,
+        "frame_offset": offset, "arms": summary}, indent=2))
+    print(f"wrote {a.pocs} weight maps x {len(arms)} arms to {out}")
 
 
 def cmd_wiener(a) -> None:
@@ -228,7 +259,8 @@ def main(argv=None) -> int:
     w.add_argument("--bg", type=float, default=0.1)
     w.add_argument("--threshold", type=float, default=0.3)
     w.add_argument("--modes", nargs="+", choices=weights.ROI_MODES, default=list(weights.ROI_MODES))
-    w.add_argument("--seed", type=int, default=0, help="seed of the shuffled arm")
+    w.add_argument("--shuffle-seeds", type=int, nargs="+", default=list(range(5)),
+                   help="pre-registered seeds of the shuffled control (one arm per seed)")
     w.add_argument("--out", required=True)
     n = sub.add_parser("wiener")
     n.add_argument("--dump", required=True)

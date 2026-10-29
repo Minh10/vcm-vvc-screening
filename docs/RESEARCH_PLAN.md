@@ -75,7 +75,7 @@ O1-B cho thấy headroom thật.
 | O1-A′ | Hệ số O1-A chiếu về cú pháp hợp lệ, ép vào mọi CTB qua `--VCMAlfExternalFile` | `oracle` → biến thể `alf_external` | Tổn thất do chuẩn hoá (lượng tử, APS 25 bộ lọc, tham chiếu) |
 | O1-B | Wiener có trọng số ROI liên tục (độ phủ điểm số detector) **trong** bộ mã ALF của VTM (thiết kế, gộp lớp, bật/tắt CTB, chọn APS theo RD có trọng số) | `experiments weights` → `alf_weighted` | **Bằng chứng quyết định** |
 | O1-B-nhị phân | Cùng cơ chế, trọng số 1 trong mọi hộp, `bg` ngoài hộp | `alf_weighted_binary` | Điểm số detector có ích không |
-| O1-B-xáo trộn | Cùng hộp (cùng kích thước, điểm số, ngân sách trọng số) dời tới vị trí ngẫu nhiên | `alf_weighted_shuffled` | Lợi ích có đến từ **căn với đối tượng** hay chỉ từ việc đổi trọng số nói chung |
+| O1-B-xáo trộn | Bản đồ liên tục dịch vòng (cyclic shift) một độ dời cho cả chuỗi, mỗi seed một độ dời; 5 seed đặt trước (`shuffled_s0…s4`). Là hoán vị điểm ảnh nên phân bố trọng số mỗi ảnh **giống hệt** nhánh chính (kể cả chồng lấn hộp và chặn ở 1), giữ tính liên tục theo thời gian; chỉ chấp nhận độ dời có chồng lấn ROI ≤ mức ngẫu nhiên | `alf_weighted_shuffled_s<k>` | Lợi ích có đến từ **căn với đối tượng** hay chỉ từ việc đổi trọng số nói chung |
 | O1-B-đồng nhất | Trọng số toàn 1 | `alf_weighted_uniform` | Kiểm tra hợp lệ: phải trùng byte `alf_default` (đã qua trên clip thử) |
 | O1-B-ép | Wiener có trọng số thiết kế offline, ép mọi CTB | `experiments wiener --weights` → `alf_external` | Tách "tiêu chí" khỏi "cơ chế chọn của VTM" |
 | Phụ | O1-A′ và O1-B ở cả AI và LDP | — | Mô tả. Chênh lệch AI–LDP **không** quy hết cho hiệu ứng qua khung tham chiếu (hai cấu hình khác nhau ở công cụ dự đoán, bitrate, QP offset); muốn tách phải có đối chứng riêng, ví dụ trong LDP chỉ áp trọng số ở ảnh không được tham chiếu so với ở mọi ảnh |
@@ -85,7 +85,7 @@ Mục tiêu tối ưu dùng đầu ra detector trên khung gốc (nhãn giả); 
 | Cổng | Tiêu chí | Nếu trượt |
 | --- | --- | --- |
 | B-0 | O1-A cải thiện mAP vượt biến thiên giữa các chuỗi ở QP giữa, và loss nhiệm vụ của O1-A thấp hơn ALF thật của anchor trên đa số ảnh | Hạ ưu tiên: chỉ chạy O1-B trên pilot, không chạy O1-A′/mở rộng. Không kết luận "không có headroom" vì O1-A không phải chặn trên |
-| B-1 | `alf_weighted` tốt hơn `alf_default` **và** tốt hơn `alf_weighted_shuffled` (BD-rate theo nhiệm vụ, hiệu số cặp theo chuỗi, CI 95 % không chứa 0, Holm cho hai so sánh); `alf_weighted_uniform` trùng byte `alf_default` ở mọi điểm | Thắng `alf_default` nhưng không thắng bản xáo trộn → lợi ích không do căn với đối tượng: No-Go cho luận điểm task-guided. Thua cả hai → No-Go; ghi kết quả âm, dồn lực cho nhánh A |
+| B-1 (`python -m vcm.alf.gate`) | Tính tự động, theo từng cấu trúc, tập `report`: (1) BD-rate nhiệm vụ của `alf_weighted` so với `alf_default`, (2) so với bản xáo trộn — BD-rate so với từng seed rồi lấy trung bình theo chuỗi (cần ≥ 3/5 seed hợp lệ). Mỗi so sánh: trung bình < 0, CI 95 % bootstrap < 0, p sign-flip Holm (2 so sánh) < 0,05. Hợp lệ: `alf_weighted_uniform` trùng byte `alf_default` ở mọi điểm, mọi bản xáo trộn đúng phân bố và chồng lấn ≤ ngẫu nhiên. Cấu trúc quyết định: LDP; AI báo cáo kèm. **Cần ≥ 7 chuỗi report** (với 6 chuỗi, p chính xác nhỏ nhất 1/32, sau Holm 1/16 > 0,05); khuyến nghị ≥ 12 | Thắng `alf_default` nhưng không thắng bản xáo trộn → lợi ích không do căn với đối tượng: No-Go cho luận điểm task-guided. Thua cả hai → No-Go; ghi kết quả âm, dồn lực cho nhánh A |
 
 Phát hiện đã đưa vào thiết kế:
 - VTM đã có Wiener có trọng số cho ALF (WSSD cho HDR). O1-B chỉ thay nguồn trọng số; phần mới là trọng số theo nhiệm
@@ -101,7 +101,8 @@ Phát hiện đã đưa vào thiết kế:
   khung đã mã hoá; khung không mã hoá bị loại khỏi GT, không bị tính là bỏ sót. Số khung giải mã phải đúng
   `ceil(frames / step)`. Cấu hình AI của VTM dùng step 8.
 - **Fingerprint.** Kết quả mã hoá chỉ được dùng lại khi trùng fingerprint: lệnh, nội dung cfg, SHA-256 bộ mã và bộ
-  giải mã, chữ ký đầu vào, nội dung mọi tệp/thư mục hook đầu vào, commit VTM. Chỉ số nhiệm vụ chỉ được dùng lại khi
+  giải mã, SHA-256 **toàn bộ** tệp đầu vào (nhớ trên đĩa theo đường dẫn/kích thước/mtime/inode; `VCM_HASH_CACHE=off`
+  khi chạy báo cáo), nội dung mọi tệp/thư mục hook đầu vào, tree VTM. Chỉ số nhiệm vụ chỉ được dùng lại khi
   trùng detector (spec + nội dung tệp trọng số), MD5 ảnh giải mã, GT, step và nguồn nhãn giả. `--strict-cache` biến
   cache lệch thành lỗi.
 - **Hook đầu vào** phải tồn tại trước khi mã hoá; biến thể có tham số `{sequence}`, `{structure}`, `{qp}`.
@@ -113,6 +114,10 @@ Phát hiện đã đưa vào thiết kế:
   thành `third_party/vtm_patch/vcm-hooks.patch` trong kho công khai này. Áp bản vá lên VTM-24.0 chính thức cho đúng
   cây (tree) của nhánh `vcm-hooks` (`third_party/vtm_patch/EXPECTED_TREE`); `scripts/fetch_vtm.sh` dừng nếu tree khác,
   ở mọi đường lấy mã.
+
+- **Preflight** (`scripts/preflight.sh`): clone sạch nhánh cần merge, `pytest`, VTM qua đường bản vá và kiểm tree,
+  build, smoke AI/LDP/RA, so trùng byte với VTM-24.0 không sửa (build riêng) ở AI/LDP/RA. CI GitHub chạy `pytest` và
+  kiểm đường bản vá ở mỗi push/PR.
 
 ## Chi phí triển khai
 

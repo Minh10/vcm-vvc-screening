@@ -242,3 +242,16 @@ def test_project_and_export(tmp_path):
     assert p.read_text().splitlines()[0] == f"# {project.FORMAT}"
     with pytest.raises(ValueError):
         project.write(p, [{"poc": 0, "coeff": f + 200, "clip_idx": clip}])
+
+
+def test_choose_shift_reaches_chance_level_and_is_a_permutation():
+    from vcm.alf import weights
+    rng = np.random.default_rng(0)
+    boxes = [np.array([[10, 10, 60, 40], [40, 20, 90, 70]]) + 2 * t for t in range(6)]   # overlapping, moving
+    masks = [weights.roi_mask(b, np.ones(2), 96, 128)[::4, ::4] for b in boxes]
+    sh = weights.choose_shift(masks, 96, 128, rng)
+    assert sh["accepted"] and sh["overlap"] <= sh["chance"] and sh["dy"] % 4 == 0 and sh["dx"] % 4 == 0
+    w = weights.roi_weights("continuous", boxes[0], np.array([0.9, 0.6]), 96, 128)
+    ws = weights.roi_weights("shuffled", boxes[0], np.array([0.9, 0.6]), 96, 128, shift=(sh["dy"], sh["dx"]))
+    assert np.array_equal(np.sort(w.ravel()), np.sort(ws.ravel()))       # overlaps and clipping preserved exactly
+    assert weights.choose_shift([np.zeros((4, 4), bool)], 16, 16, rng)["dy"] == 0      # no ROI: no shift

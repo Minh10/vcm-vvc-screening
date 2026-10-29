@@ -177,13 +177,21 @@ def test_wiener_and_weights_commands(fake_dump, tmp_path):
     assert w1.mean() == pytest.approx(1.0, rel=1e-5) and w1[0, 0] > w1[-1, -1]
     b1 = load("binary", 1)                                        # score ignored: two levels only
     assert len(np.unique(np.round(b1, 5))) == 2 and b1[0, 0] > b1[-1, -1]
-    sh = load("shuffled", 1)                                      # same budget, box moved off the object
-    assert sh.mean() == pytest.approx(1.0, rel=1e-5)
-    assert np.sort(sh.ravel()) == pytest.approx(np.sort(w1.ravel()), rel=1e-5)
-    assert sh[:16, :24].mean() < w1[:16, :24].mean()
+    summ = json.loads((wd / "weights_summary.json").read_text())["arms"]
+    shifts = set()
+    for seed in range(5):                                         # one arm per pre-registered seed
+        sh = load(f"shuffled_s{seed}", 1)
+        assert np.array_equal(np.sort(sh.ravel()), np.sort(w1.ravel()))          # identical weight distribution
+        assert sh[:16, :24].mean() < w1[:16, :24].mean()                         # no longer on the object
+        arm = summ[f"shuffled_s{seed}"]
+        assert arm["same_weight_distribution_as_continuous"] and arm["shift"]["accepted"]
+        assert arm["roi_overlap"] <= arm["shift"]["chance"] + 1e-12
+        assert arm["weight_share_in_roi"] < summ["continuous"]["weight_share_in_roi"]
+        shifts.add((arm["shift"]["dy"], arm["shift"]["dx"]))
+    assert len(shifts) > 1
+    s0 = [load("shuffled_s0", p) for p in (0, 1)]                # one shift for the whole sequence
+    assert np.allclose(s0[0], 1.0)
     assert np.array_equal(load("uniform", 1), np.ones((32, 48), "<f4"))
-    summ = json.loads((wd / "weights_summary.json").read_text())["modes"]
-    assert summ["continuous"]["weight_share_in_roi"] > summ["shuffled"]["weight_share_in_roi"]
     experiments.main(["wiener", "--dump", str(d), "--weights", str(wd / "continuous"), "--out",
                       str(tmp_path / "ww.txt")])
     assert sorted(project.read(tmp_path / "ww.txt")) == [0, 1]

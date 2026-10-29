@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="$ROOT/third_party/VTM"
+SRC="${VTM_SRC:-$ROOT/third_party/VTM}"
 BUILD="$SRC/build"
 JOBS="${JOBS:-$(nproc)}"
 
